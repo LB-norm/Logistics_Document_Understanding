@@ -1,0 +1,125 @@
+{
+  "model": {
+    "model_id": "naver-clova-ix/donut-base-finetuned-cord-v2",
+    "model_revision": null,
+    "device": "cpu",
+    "task_prompt": "<s_cord-v2>"
+  },
+  "input": {
+    "image_path": "/home/Lars/Projekte/Masterstudienarbeit/data/Lieferschein-Beispiel.png",
+    "schema_path": "/home/Lars/Projekte/Masterstudienarbeit/src/Donut/lieferschein.schema.json",
+    "example_path": "/home/Lars/Projekte/Masterstudienarbeit/src/Donut/lieferschein.example.json"
+  },
+  "guidance": {
+    "schema_title": "Lieferschein Information Extraction Output",
+    "required_fields": [
+      "document_type",
+      "issuer",
+      "delivery_note_number",
+      "document_date",
+      "items"
+    ]
+  },
+  "notes": [
+    "This default checkpoint is fine-tuned for CORD receipt parsing, not for German delivery notes. It is useful as a runnable Donut baseline, but it will not reliably output the custom Lieferschein JSON until you fine-tune a checkpoint on this schema."
+  ],
+  "generated": {
+    "raw_sequence": "<s_cord-v2><s_menu><s_nm> Carsten Hilgers</s_nm><s_discountprice> Zweirader</s_discountprice><s_price> Hilgers</s_price><sep/><s_nm> BARVERKAUF</s_nm><s_discountprice> SbahWelstr. 57</s_nm><sep/><s_nm> Telefon, 0489-638856</s_nm><s_price> 268</s_price><sep/><s_nm> Fax: 0489-6388汽 لشركة Emil: zweirad.nikes@tonize.de</s_nm><s_price> 27,042/08</s_price><sep/><s_nm> Datum: Leterschein-Ntc.</s_nm><s_price> 2011042708</s_price><sep/><s_nm> Kunden-Nr.:</s_nm><s_price> 10001</s_price><sep/><s_nm> Sachbeathetery.Int. Carsten Higors</s_nm><s_price> Lieferschein</s_nm><s_price> 27,04201</s_price><sep/><s_nm> Sen greehte Damen und Hernen</s_nm><s_price> 27,04201</s_price><sep/><s_nm> entspeched Inem Auttrag lefern wir wie folgt aus:</s_nm><s_price> 2017047208</s_price><sep/><s_nm> Anzahl Emheit Arkeihn. Bezechung</s_nm><s_unitprice> 70001</s_unitprice><s_cnt> 2</s_cnt><s_discountprice> -Autoventi</s_nm><s_unitprice> Slk. ETO001 - AV RCP Fahrradschlauch 26 Voll universal - Autoventi</s_nm><s_cnt> 2</s_cnt><s_price> -</s_price><sep/><s_nm> SK. ETO001 - -26 TOUR NICE TOUR Ide 47-55g schwarzweilB-26 Zoll</s_nm><s_cnt> 3</s_cnt><s_price> SPLK. SPK. RP0001 - HN Refenwechzel - hinter - Nabenschatting</s_nm><s_cnt> 1</s_cnt><s_price> RP0001 - V Refermechesel - vom</s_nm><s_cnt> 1</s_cnt><sep/><s_nm> SK.</s_nm><s_cnt> 1</s_cnt><s_discountprice> 12,5*2'sem Slk. ZB0003</s_nm><s_unitprice> Blige Lufthavn schwar</s_nm><s_cnt> 1</s_cnt><s_price> speciali<s_cnt> 1</s_cnt><s_price> 12.5*2'2'sam</s_price><sep/><s_nm> Fanhradschoks</s_nm><s_unitprice> Blige Lufthavne</s_nm><s_cnt> 1</s_cnt><s_price> speciali<s_cnt> 1</s_cnt><s_price> speciali<s_cnt> 1</s_cnt><s_price> speciali<s_cnt> 1</s_cnt><s_price> Rpgels us egenskaber<s_cnt> 1</s_cnt><s_price> speciali<sep/><s_nm> Innenliegenden arti-picking Schles.ytlande, gegen</s_nm><s_price> Autbohren geschet</s_nm><s_discountprice> Vinylrberzyg schutzky vor Beschaldgungen,wetterfest</s_nm><s_price> Sverige</s_nm><s_price> Sverigen Teljes</s_nm><s_price> RICokragen emeichen Sie uns unter einer der angegebernen Teljesfonnum mem.</s_nm><s_price> SUS一面</s_void_menu></s_menu><s_sub_total><s_subtotal_price> Esquemummeer墊 69/12/470712</s_subtotal_price></s_sub_total><s_total><s_total_price> 933555555). Klo. 1246680</s_nm><s_price> 671743296</s_price></s_menu><s_sub_total><s_subtotal_price></s>",
+    "cleaned_sequence": "<s_menu><s_nm> Carsten Hilgers</s_nm><s_discountprice> Zweirader</s_discountprice><s_price> Hilgers</s_price><sep/><s_nm> BARVERKAUF</s_nm><s_discountprice> SbahWelstr. 57</s_nm><sep/><s_nm> Telefon, 0489-638856</s_nm><s_price> 268</s_price><sep/><s_nm> Fax: 0489-6388汽 لشركة Emil: zweirad.nikes@tonize.de</s_nm><s_price> 27,042/08</s_price><sep/><s_nm> Datum: Leterschein-Ntc.</s_nm><s_price> 2011042708</s_price><sep/><s_nm> Kunden-Nr.:</s_nm><s_price> 10001</s_price><sep/><s_nm> Sachbeathetery.Int. Carsten Higors</s_nm><s_price> Lieferschein</s_nm><s_price> 27,04201</s_price><sep/><s_nm> Sen greehte Damen und Hernen</s_nm><s_price> 27,04201</s_price><sep/><s_nm> entspeched Inem Auttrag lefern wir wie folgt aus:</s_nm><s_price> 2017047208</s_price><sep/><s_nm> Anzahl Emheit Arkeihn. Bezechung</s_nm><s_unitprice> 70001</s_unitprice><s_cnt> 2</s_cnt><s_discountprice> -Autoventi</s_nm><s_unitprice> Slk. ETO001 - AV RCP Fahrradschlauch 26 Voll universal - Autoventi</s_nm><s_cnt> 2</s_cnt><s_price> -</s_price><sep/><s_nm> SK. ETO001 - -26 TOUR NICE TOUR Ide 47-55g schwarzweilB-26 Zoll</s_nm><s_cnt> 3</s_cnt><s_price> SPLK. SPK. RP0001 - HN Refenwechzel - hinter - Nabenschatting</s_nm><s_cnt> 1</s_cnt><s_price> RP0001 - V Refermechesel - vom</s_nm><s_cnt> 1</s_cnt><sep/><s_nm> SK.</s_nm><s_cnt> 1</s_cnt><s_discountprice> 12,5*2'sem Slk. ZB0003</s_nm><s_unitprice> Blige Lufthavn schwar</s_nm><s_cnt> 1</s_cnt><s_price> speciali<s_cnt> 1</s_cnt><s_price> 12.5*2'2'sam</s_price><sep/><s_nm> Fanhradschoks</s_nm><s_unitprice> Blige Lufthavne</s_nm><s_cnt> 1</s_cnt><s_price> speciali<s_cnt> 1</s_cnt><s_price> speciali<s_cnt> 1</s_cnt><s_price> speciali<s_cnt> 1</s_cnt><s_price> Rpgels us egenskaber<s_cnt> 1</s_cnt><s_price> speciali<sep/><s_nm> Innenliegenden arti-picking Schles.ytlande, gegen</s_nm><s_price> Autbohren geschet</s_nm><s_discountprice> Vinylrberzyg schutzky vor Beschaldgungen,wetterfest</s_nm><s_price> Sverige</s_nm><s_price> Sverigen Teljes</s_nm><s_price> RICokragen emeichen Sie uns unter einer der angegebernen Teljesfonnum mem.</s_nm><s_price> SUS一面</s_void_menu></s_menu><s_sub_total><s_subtotal_price> Esquemummeer墊 69/12/470712</s_subtotal_price></s_sub_total><s_total><s_total_price> 933555555). Klo. 1246680</s_nm><s_price> 671743296</s_price></s_menu><s_sub_total><s_subtotal_price>",
+    "raw_prediction": {
+      "menu": [
+        {
+          "nm": "Carsten Hilgers",
+          "discountprice": "Zweirader",
+          "price": "Hilgers"
+        },
+        {
+          "nm": "Telefon, 0489-638856"
+        },
+        {
+          "nm": "Telefon, 0489-638856",
+          "price": "268"
+        },
+        {
+          "nm": "Fax: 0489-6388汽 لشركة Emil: zweirad.nikes@tonize.de",
+          "price": "27,042/08"
+        },
+        {
+          "nm": "Datum: Leterschein-Ntc.",
+          "price": "2011042708"
+        },
+        {
+          "nm": "Kunden-Nr.:",
+          "price": "10001"
+        },
+        {
+          "nm": "Sachbeathetery.Int. Carsten Higors"
+        },
+        {
+          "nm": "Sen greehte Damen und Hernen",
+          "price": "27,04201"
+        },
+        {
+          "nm": "entspeched Inem Auttrag lefern wir wie folgt aus:",
+          "price": "2017047208"
+        },
+        {
+          "nm": "Anzahl Emheit Arkeihn. Bezechung",
+          "unitprice": "70001",
+          "cnt": "2",
+          "price": "-"
+        },
+        {
+          "nm": "SK. ETO001 - -26 TOUR NICE TOUR Ide 47-55g schwarzweilB-26 Zoll",
+          "cnt": "3",
+          "price": [
+            {
+              "cnt": "1"
+            },
+            {
+              "nm": "SK.",
+              "cnt": "1"
+            }
+          ]
+        },
+        {
+          "nm": "Innenliegenden arti-picking Schles.ytlande, gegen",
+          "cnt": "1"
+        }
+      ],
+      "sub_total": {
+        "subtotal_price": "Esquemummeer墊 69/12/470712"
+      },
+      "price": "671743296"
+    },
+    "guided_prediction": {
+      "document_type": "lieferschein",
+      "document_language": "de",
+      "sale_type": null,
+      "delivery_note_number": null,
+      "document_date": null,
+      "document_date_iso": null,
+      "customer_number": null,
+      "clerk": null,
+      "issuer": {
+        "name": null,
+        "address": {
+          "street": null,
+          "postal_code": null,
+          "city": null,
+          "country": null,
+          "address_lines": []
+        },
+        "contact": {
+          "phone": null,
+          "fax": null,
+          "email": null
+        }
+      },
+      "recipient": null,
+      "items": [],
+      "notes": [],
+      "signatory": null
+    }
+  }
+}

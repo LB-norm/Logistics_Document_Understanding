@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "src/Donut/lieferschein.schema.json",
+  "title": "Lieferschein Information Extraction Output",
+  "description": "Validation schema for structured delivery note extraction. Donut itself does not consume JSON Schema during inference, but a fixed target schema is useful for annotation, post-processing, and output validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "document_type",
+    "issuer",
+    "delivery_note_number",
+    "document_date",
+    "items"
+  ],
+  "properties": {
+    "document_type": {
+      "type": "string",
+      "const": "lieferschein"
+    },
+    "document_language": {
+      "type": "string",
+      "default": "de"
+    },
+    "sale_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Optional sale or transaction label visible on the document, for example BARVERKAUF."
+    },
+    "delivery_note_number": {
+      "type": "string",
+      "minLength": 1
+    },
+    "document_date": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Raw date string as written on the document, for example 27.04.2017."
+    },
+    "document_date_iso": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "Optional normalized ISO-8601 date."
+    },
+    "customer_number": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "clerk": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "issuer": {
+      "$ref": "#/$defs/party"
+    },
+    "recipient": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/party"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/line_item"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "signatory": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "party": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "address": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/address"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/contact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "address": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "street": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "postal_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "city": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "country": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "address_lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "contact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "phone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fax": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "email": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "line_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quantity",
+        "unit",
+        "description"
+      ],
+      "properties": {
+        "line_number": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "quantity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "article_number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "document_type": "lieferschein",
+      "document_language": "de",
+      "sale_type": "BARVERKAUF",
+      "delivery_note_number": "2017042708",
+      "document_date": "27.04.2017",
+      "document_date_iso": "2017-04-27",
+      "customer_number": "10001",
+      "clerk": "Carsten Hilgers",
+      "issuer": {
+        "name": "Carsten Hilgers Zweiraeder",
+        "address": {
+          "street": "Stahlwerkstr. 57",
+          "postal_code": "26689",
+          "city": "Apen",
+          "country": null,
+          "address_lines": [
+            "Stahlwerkstr. 57",
+            "26689 Apen"
+          ]
+        },
+        "contact": {
+          "phone": "04489-63856",
+          "fax": "04489-63857",
+          "email": "zweirad.hilgers@t-online.de"
+        }
+      },
+      "recipient": null,
+      "items": [
+        {
+          "line_number": 1,
+          "quantity": "2",
+          "unit": "Stk.",
+          "article_number": "ET0001 - AV",
+          "description": "RCP Fahrradschlauch 26 Zoll universal - Autoventil"
+        },
+        {
+          "line_number": 2,
+          "quantity": "3",
+          "unit": "Stk.",
+          "article_number": "ET0004 - 26",
+          "description": "Tourenreifen TourRide 47-559 schwarz/weiss - 26 Zoll"
+        },
+        {
+          "line_number": 3,
+          "quantity": "1",
+          "unit": "Stk.",
+          "article_number": "RP0001 - HN",
+          "description": "Reifenwechsel - hinten - Nabenschaltung"
+        },
+        {
+          "line_number": 4,
+          "quantity": "1",
+          "unit": "Stk.",
+          "article_number": "RP0001 - V",
+          "description": "Reifenwechsel - vorn"
+        },
+        {
+          "line_number": 5,
+          "quantity": "1",
+          "unit": "Stk.",
+          "article_number": "ZB0003",
+          "description": "Fahrradschloss Buegel KrypoLock schwarz 12,5*22,5 cm 13 mm starker Buegel aus gehaertetem Spezialstahl"
+        }
+      ],
+      "notes": [
+        "Bei Rueckfragen erreichen Sie uns unter einer der angegebenen Telefonnummern."
+      ],
+      "signatory": "Carsten Hilgers"
+    }
+  ]
+}

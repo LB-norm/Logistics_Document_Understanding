@@ -3,6 +3,8 @@ venv/
 .venv/
 env/
 ENV/
+models/
+data/
 
 # Optional: ignore Python cache files too
 __pycache__/

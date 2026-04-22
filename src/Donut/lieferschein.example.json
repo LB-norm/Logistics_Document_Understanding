@@ -1,0 +1,70 @@
+{
+  "document_type": "lieferschein",
+  "document_language": "de",
+  "sale_type": "BARVERKAUF",
+  "delivery_note_number": "2017042708",
+  "document_date": "27.04.2017",
+  "document_date_iso": "2017-04-27",
+  "customer_number": "10001",
+  "clerk": "Carsten Hilgers",
+  "issuer": {
+    "name": "Carsten Hilgers Zweiraeder",
+    "address": {
+      "street": "Stahlwerkstr. 57",
+      "postal_code": "26689",
+      "city": "Apen",
+      "country": null,
+      "address_lines": [
+        "Stahlwerkstr. 57",
+        "26689 Apen"
+      ]
+    },
+    "contact": {
+      "phone": "04489-63856",
+      "fax": "04489-63857",
+      "email": "zweirad.hilgers@t-online.de"
+    }
+  },
+  "recipient": null,
+  "items": [
+    {
+      "line_number": 1,
+      "quantity": "2",
+      "unit": "Stk.",
+      "article_number": "ET0001 - AV",
+      "description": "RCP Fahrradschlauch 26 Zoll universal - Autoventil"
+    },
+    {
+      "line_number": 2,
+      "quantity": "3",
+      "unit": "Stk.",
+      "article_number": "ET0004 - 26",
+      "description": "Tourenreifen TourRide 47-559 schwarz/weiss - 26 Zoll"
+    },
+    {
+      "line_number": 3,
+      "quantity": "1",
+      "unit": "Stk.",
+      "article_number": "RP0001 - HN",
+      "description": "Reifenwechsel - hinten - Nabenschaltung"
+    },
+    {
+      "line_number": 4,
+      "quantity": "1",
+      "unit": "Stk.",
+      "article_number": "RP0001 - V",
+      "description": "Reifenwechsel - vorn"
+    },
+    {
+      "line_number": 5,
+      "quantity": "1",
+      "unit": "Stk.",
+      "article_number": "ZB0003",
+      "description": "Fahrradschloss Buegel KrypoLock schwarz 12,5*22,5 cm 13 mm starker Buegel aus gehaertetem Spezialstahl"
+    }
+  ],
+  "notes": [
+    "Bei Rueckfragen erreichen Sie uns unter einer der angegebenen Telefonnummern."
+  ],
+  "signatory": "Carsten Hilgers"
+}
