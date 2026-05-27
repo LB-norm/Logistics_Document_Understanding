@@ -1,8 +1,6 @@
 # Python virtual environments
 venv/
 .venv/
-env/
-ENV/
 models/
 data/
 
