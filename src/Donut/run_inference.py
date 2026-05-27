@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_IMAGE_PATH = REPO_ROOT / "data" / "Lieferschein-Beispiel.png"
 DEFAULT_SCHEMA_PATH = Path(__file__).with_name("lieferschein.schema.json")
@@ -177,11 +176,15 @@ def parse_sequence_to_json(sequence: str, processor: Any) -> Any:
     return {"text_sequence": sequence}
 
 
-def fill_from_template(template: Any, prediction: Any = None, key: str | None = None) -> Any:
+def fill_from_template(
+    template: Any, prediction: Any = None, key: str | None = None
+) -> Any:
     if isinstance(template, dict):
         source = prediction if isinstance(prediction, dict) else {}
         return {
-            child_key: fill_from_template(child_template, source.get(child_key), child_key)
+            child_key: fill_from_template(
+                child_template, source.get(child_key), child_key
+            )
             for child_key, child_template in template.items()
         }
 
@@ -235,11 +238,15 @@ def main() -> int:
     template = load_json(args.example_path)
     schema = load_json(args.schema_path)
 
-    torch, image_module, DonutProcessor, VisionEncoderDecoderModel = load_runtime_dependencies()
+    torch, image_module, DonutProcessor, VisionEncoderDecoderModel = (
+        load_runtime_dependencies()
+    )
     model_load_kwargs = build_model_load_kwargs(args)
 
     processor = DonutProcessor.from_pretrained(args.model_id, **model_load_kwargs)
-    model = VisionEncoderDecoderModel.from_pretrained(args.model_id, **model_load_kwargs)
+    model = VisionEncoderDecoderModel.from_pretrained(
+        args.model_id, **model_load_kwargs
+    )
     model.to(args.device)
     model.eval()
 
@@ -252,7 +259,9 @@ def main() -> int:
         return_tensors="pt",
     ).input_ids.to(args.device)
 
-    max_supported_length = getattr(model.decoder.config, "max_position_embeddings", args.max_length)
+    max_supported_length = getattr(
+        model.decoder.config, "max_position_embeddings", args.max_length
+    )
     max_length = min(args.max_length, max_supported_length)
 
     generation_kwargs: dict[str, Any] = {

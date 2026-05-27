@@ -52,4 +52,3 @@ def save_ppstructure_visualizations(
 
     for res in result_list:
         res.save_to_img(save_path=str(output_dir))
-

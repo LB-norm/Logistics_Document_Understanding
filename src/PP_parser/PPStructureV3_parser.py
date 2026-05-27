@@ -6,10 +6,11 @@ img_path = r"data\datasets\cmr_dachser_20260520\train\images\0ff01432-aefe-45a4-
 #     lang="de",  # or "en"
 #     use_doc_orientation_classify=True,
 #     use_doc_unwarping=True,
-#     device="cpu"   
+#     device="cpu"
 # )
 
 pipeline = PaddleOCRVL(
+<<<<<<< HEAD
     pipeline_version="v1.5",
     device="gpu",
     # cpu_threads=8,
@@ -24,6 +25,15 @@ results = pipeline.predict(
     # max_pixels=512 * 512,
     # max_new_tokens=256
 )
+=======
+    device="cpu",
+    cpu_threads=8,
+    use_layout_detection=True,  # lighter first test
+    use_queues=False,  # simpler for a single image
+)
+
+results = pipeline.predict(img_path, max_pixels=512 * 512, max_new_tokens=256)
+>>>>>>> 87ad4e7 (idk)
 
 save_ppstructure_visualizations(results, "output/vis")
 
@@ -32,4 +42,4 @@ for res in results:
     res.save_to_json(save_path="output")
     res.save_to_markdown(save_path="output")
 
-    data = res.json   
+    data = res.json
