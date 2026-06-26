@@ -1,1 +1,0 @@
-Literature_Review als Quelle für "Logistik Dokumente wenig getestet" und "Modelle alle auf den selben offenen Datensätzen gebenchmarked, aber Dokumente aus der Praxis oft nur in kleinen privaten Datensätzen vorhanden". 
