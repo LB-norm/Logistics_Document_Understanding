@@ -1,16 +1,61 @@
-# Qwen Fine-Tuning Dataset Format
+# Qwen Fine-Tuning Pipeline
 
 This folder contains a Qwen3.5-27B LoRA/QLoRA training script and an inference script for the Lieferschein extraction task.
 
-The dataset format below is based on the official Hugging Face documentation for:
+The trainer supports two dataset layouts:
+
+- the current project dataset under `data/datasets/raw_data_20260527`
+- a prepared Qwen conversational JSONL dataset under a folder such as `data/qwen_lora_dataset`
+
+The conversational format is based on the official Hugging Face documentation for:
 
 - Qwen3.5 multimodal support in Transformers
 - vision-language SFT dataset formats in TRL
 - SFT guidance to avoid truncating image tokens by leaving `max_length=None`
 
-The local training script in `src/Qwen/train_finetune.py` expects a simple on-disk JSONL layout that maps cleanly to that official conversational vision format.
+## Project Dataset Layout
 
-## Expected Folder Layout
+The default dataset root is `data/datasets/raw_data_20260527`:
+
+```text
+dataset_root/
+  train/
+    metadata.jsonl
+    images/...
+    annotations/...
+  val/
+    metadata.jsonl
+    images/...
+    annotations/...
+  test/
+    metadata.jsonl
+    images/...
+    annotations/...
+```
+
+Each metadata row points to an image and annotation:
+
+```json
+{
+  "id": "cmr_dachser__example_page_1",
+  "image": "train/images/cmr_dachser/example_page_1.jpg",
+  "annotation": "train/annotations/cmr_dachser/example_page_1_0.json"
+}
+```
+
+By default, `annotation["content"]` is serialized as the final assistant message. Annotation `metadata` is ignored. Use `--annotation-target-key root` only if you intentionally want the full annotation wrapper as the target.
+
+Run a dataset parsing dry run without loading model dependencies:
+
+```bash
+python3 src/Qwen/train_finetune.py \
+  --dataset-root data/datasets/raw_data_20260527 \
+  --dry-run
+```
+
+Runtime dependencies for actual training include `peft`. The default QLoRA path also requires `bitsandbytes`; pass `--no-load-in-4bit` for regular LoRA when you do not want the 4-bit path.
+
+## Qwen JSONL Layout
 
 ```text
 data/qwen_lora_dataset/
@@ -138,17 +183,17 @@ The training script normalizes string content into typed text blocks, but the re
 
 ## Training Command
 
-Once the dataset is ready in `data/qwen_lora_dataset`, run:
+Dataset-only dry run:
 
 ```bash
-python3 src/Qwen/train_finetune.py
+python3 src/Qwen/train_finetune.py --dry-run
 ```
 
-A more explicit QLoRA command is:
+QLoRA command for the current project dataset:
 
 ```bash
 python3 src/Qwen/train_finetune.py \
-  --dataset-root data/qwen_lora_dataset \
+  --dataset-root data/datasets/raw_data_20260527 \
   --model-id Qwen/Qwen3.5-27B \
   --output-dir models/qwen-lieferschein-lora \
   --load-in-4bit \
@@ -157,6 +202,8 @@ python3 src/Qwen/train_finetune.py \
   --gradient-accumulation-steps 8
 ```
 
+For a prepared JSONL dataset, pass `--dataset-root data/qwen_lora_dataset`.
+
 ## Inference Command
 
 After training, run:
@@ -164,6 +211,8 @@ After training, run:
 ```bash
 python3 src/Qwen/run_inference.py --adapter-path models/qwen-lieferschein-lora
 ```
+
+The default inference image and template come from `data/small testing` and use the annotation `content` object as the JSON skeleton.
 
 ## Sources
 

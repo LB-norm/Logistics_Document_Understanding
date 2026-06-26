@@ -1,0 +1,26 @@
+# Core model training and inference
+torch>=2.6
+torchvision>=0.21
+transformers>=5.3
+datasets>=4.0
+accelerate>=1.0
+peft>=0.14
+bitsandbytes>=0.45
+Pillow>=10.0
+sentencepiece>=0.2
+numpy>=1.26
+
+# PaddleOCR-VL parser and visualizations
+paddleocr>=3.4
+paddlepaddle>=3.2
+matplotlib>=3.8
+
+# Synthetic document generation
+Faker>=24.0
+WeasyPrint>=60.0
+opencv-python>=4.10
+augraphy>=8.2
+
+# The synthetic generator also requires the Poppler `pdftoppm` executable, which
+# must be installed through the operating system package manager.
+# Install CUDA-specific PyTorch and PaddlePaddle wheels separately when needed.

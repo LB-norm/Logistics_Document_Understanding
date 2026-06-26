@@ -1,9 +1,25 @@
-# Python virtual environments
+# Local development environments and editor state
 venv/
 .venv/
-models/
-data/
+.vscode/
+.agents/
+.codex/
 
-# Optional: ignore Python cache files too
+# Python caches
 __pycache__/
 *.pyc
+
+# Local datasets and trained model artifacts
+data/
+models/
+
+# Research material not intended for publication with the code
+theory/
+
+# Generated documents, inference output, and augmentation caches
+output/
+synthetic_lieferscheine/
+augraphy_cache/
+
+# Downloaded and derived product-name datasets
+src/dataset_gen/*.jsonl

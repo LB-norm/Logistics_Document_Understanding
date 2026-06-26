@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 from dataclasses import dataclass
@@ -10,9 +11,19 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATASET_ROOT = REPO_ROOT / "data" / "qwen_lora_dataset"
+DEFAULT_DATASET_ROOT = REPO_ROOT / "data" / "datasets" / "raw_data_20260527"
+DEFAULT_SCHEMA_PATH = REPO_ROOT / "src" / "Donut" / "lieferschein.schema.json"
 DEFAULT_MODEL_ID = "Qwen/Qwen3.5-27B"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "models" / "qwen-lieferschein-lora"
+DEFAULT_ANNOTATION_TARGET_KEY = "content"
+DEFAULT_SYSTEM_PROMPT = (
+    "You are an information extraction model for CMR delivery note scans. "
+    "Return strict JSON only."
+)
+DEFAULT_USER_PROMPT = (
+    "Extract all relevant document information into the target CMR/Lieferschein "
+    "content JSON object. Use null for missing scalar values and [] for missing arrays."
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,19 +38,50 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_DATASET_ROOT,
         help=(
-            "Dataset directory containing train.jsonl, validation.jsonl, and image files. "
-            "See src/Qwen/README.md for the expected structure."
+            "Dataset root. Supported layouts: the project data/datasets split folders "
+            "with metadata.jsonl rows containing image/annotation paths, or a Qwen JSONL "
+            "folder containing train.jsonl and validation.jsonl."
         ),
     )
     parser.add_argument(
         "--train-file",
         default="train.jsonl",
-        help="Training JSONL file name relative to --dataset-root.",
+        help="Training JSONL file name relative to --dataset-root for Qwen JSONL datasets.",
     )
     parser.add_argument(
         "--validation-file",
         default="validation.jsonl",
-        help="Validation JSONL file name relative to --dataset-root.",
+        help="Validation JSONL file name relative to --dataset-root for Qwen JSONL datasets.",
+    )
+    parser.add_argument("--train-split", default="train", help="Training split directory name for project datasets.")
+    parser.add_argument(
+        "--validation-split",
+        default=None,
+        help="Validation split directory name for project datasets. If omitted, tries validation, val, then dev.",
+    )
+    parser.add_argument(
+        "--annotation-target-key",
+        default=DEFAULT_ANNOTATION_TARGET_KEY,
+        help=(
+            "Key inside project annotation JSON files to use as the assistant target. "
+            "The default 'content' ignores annotation metadata. Use 'root' to train on the full JSON object."
+        ),
+    )
+    parser.add_argument(
+        "--schema-path",
+        type=Path,
+        default=DEFAULT_SCHEMA_PATH,
+        help="Schema file referenced in dry-run summaries and documentation.",
+    )
+    parser.add_argument(
+        "--system-prompt",
+        default=DEFAULT_SYSTEM_PROMPT,
+        help="System prompt used when converting project annotations into Qwen chat examples.",
+    )
+    parser.add_argument(
+        "--user-prompt",
+        default=DEFAULT_USER_PROMPT,
+        help="User prompt used when converting project annotations into Qwen chat examples.",
     )
     parser.add_argument(
         "--output-dir",
@@ -176,10 +218,27 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional checkpoint path to resume training from.",
     )
+    parser.add_argument(
+        "--max-train-samples",
+        type=int,
+        default=None,
+        help="Optional cap for quick debugging on a subset of the training examples.",
+    )
+    parser.add_argument(
+        "--max-validation-samples",
+        type=int,
+        default=None,
+        help="Optional cap for quick debugging on a subset of the validation examples.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Parse and validate the dataset, print a summary, then exit before loading model dependencies.",
+    )
     return parser.parse_args()
 
 
-def load_runtime_dependencies() -> tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any]:
+def load_runtime_dependencies(load_in_4bit: bool) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any]:
     missing: list[str] = []
 
     try:
@@ -223,6 +282,12 @@ def load_runtime_dependencies() -> tuple[Any, Any, Any, Any, Any, Any, Any, Any,
         LoraConfig = None
         get_peft_model = None
         prepare_model_for_kbit_training = None
+
+    if load_in_4bit:
+        try:
+            import bitsandbytes  # noqa: F401
+        except ImportError:
+            missing.append("bitsandbytes")
 
     if missing:
         missing_csv = ", ".join(missing)
@@ -277,6 +342,11 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def load_json(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def resolve_dataset_file(dataset_root: Path, relative_name: str) -> Path:
     dataset_file = dataset_root / relative_name
     if not dataset_root.is_dir():
@@ -284,6 +354,34 @@ def resolve_dataset_file(dataset_root: Path, relative_name: str) -> Path:
     if not dataset_file.exists():
         raise FileNotFoundError(f"Dataset file not found: {dataset_file}")
     return dataset_file
+
+
+def resolve_existing_path(path_value: str, dataset_root: Path, split_dir: Path) -> Path:
+    path = Path(path_value)
+    candidates = [path] if path.is_absolute() else [dataset_root / path, split_dir / path]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(f"Referenced path does not exist: {path_value}. Checked: {checked}")
+
+
+def extract_annotation_target(annotation: Any, target_key: str) -> Any:
+    if target_key in {"", ".", "root"}:
+        return annotation
+
+    target = annotation
+    for key in target_key.split("."):
+        if not isinstance(target, dict) or key not in target:
+            raise KeyError(f"Annotation target key {target_key!r} not found.")
+        target = target[key]
+
+    if not isinstance(target, dict):
+        raise TypeError(f"Annotation target {target_key!r} must resolve to a JSON object.")
+
+    return target
 
 
 def normalize_text_content(text: str) -> dict[str, Any]:
@@ -419,6 +517,175 @@ def load_split(dataset_file: Path, dataset_root: Path) -> list[dict[str, Any]]:
     return [build_example_record(record, dataset_root) for record in read_jsonl(dataset_file)]
 
 
+def build_project_messages(gt_parse: Any, args: argparse.Namespace) -> list[dict[str, Any]]:
+    return [
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": args.system_prompt}],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "image"},
+                {"type": "text", "text": args.user_prompt},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(gt_parse, ensure_ascii=False, sort_keys=True),
+                }
+            ],
+        },
+    ]
+
+
+def build_project_example_record(
+    raw_record: dict[str, Any],
+    dataset_root: Path,
+    split_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    if "image" not in raw_record:
+        raise ValueError(f"Missing 'image' in project dataset metadata row: {raw_record}")
+    if "annotation" not in raw_record:
+        raise ValueError(f"Missing 'annotation' in project dataset metadata row: {raw_record}")
+
+    image_path = resolve_existing_path(raw_record["image"], dataset_root, split_dir)
+    annotation_path = resolve_existing_path(raw_record["annotation"], dataset_root, split_dir)
+    annotation = load_json(annotation_path)
+    gt_parse = extract_annotation_target(annotation, args.annotation_target_key)
+    messages = normalize_messages(build_project_messages(gt_parse, args), image_count=1)
+
+    return {
+        "id": raw_record.get("id", image_path.stem),
+        "messages": messages,
+        "image_paths": [str(image_path)],
+        "annotation_path": str(annotation_path),
+        "target_keys": sorted(gt_parse.keys()) if isinstance(gt_parse, dict) else [],
+    }
+
+
+def load_project_split(
+    dataset_root: Path,
+    split_dir: Path,
+    args: argparse.Namespace,
+) -> list[dict[str, Any]]:
+    metadata_path = split_dir / "metadata.jsonl"
+    if not split_dir.is_dir():
+        raise FileNotFoundError(f"Split directory not found: {split_dir}")
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Missing metadata.jsonl in split directory: {split_dir}")
+
+    return [
+        build_project_example_record(record, dataset_root, split_dir, args)
+        for record in read_jsonl(metadata_path)
+    ]
+
+
+def choose_validation_split(dataset_root: Path, requested_split: str | None) -> str | None:
+    if requested_split is not None:
+        return requested_split
+
+    for split_name in ("validation", "val", "dev"):
+        if (dataset_root / split_name / "metadata.jsonl").exists():
+            return split_name
+
+    return None
+
+
+def cap_examples(examples: list[dict[str, Any]], sample_limit: int | None) -> list[dict[str, Any]]:
+    if sample_limit is None:
+        return examples
+    if sample_limit < 1:
+        raise ValueError("Sample limits must be positive integers.")
+    return examples[:sample_limit]
+
+
+def load_dataset_splits(
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str, str, str, str]:
+    dataset_root = args.dataset_root.resolve()
+    if not dataset_root.is_dir():
+        raise FileNotFoundError(f"Dataset directory not found: {dataset_root}")
+
+    train_split_dir = dataset_root / args.train_split
+    if (train_split_dir / "metadata.jsonl").exists():
+        validation_split = choose_validation_split(dataset_root, args.validation_split)
+        if validation_split is None:
+            raise FileNotFoundError(
+                "Could not find a validation split. Expected one of validation/, val/, or dev/ "
+                "with metadata.jsonl, or pass --validation-split."
+            )
+        validation_split_dir = dataset_root / validation_split
+        train_examples = load_project_split(dataset_root, train_split_dir, args)
+        validation_examples = load_project_split(dataset_root, validation_split_dir, args)
+        source_layout = "project_metadata_splits"
+        train_source = args.train_split
+        validation_source = validation_split
+    else:
+        train_file = resolve_dataset_file(dataset_root, args.train_file)
+        validation_file = resolve_dataset_file(dataset_root, args.validation_file)
+        train_examples = load_split(train_file, dataset_root)
+        validation_examples = load_split(validation_file, dataset_root)
+        source_layout = "qwen_jsonl"
+        train_source = str(train_file)
+        validation_source = str(validation_file)
+
+    train_examples = cap_examples(train_examples, args.max_train_samples)
+    validation_examples = cap_examples(validation_examples, args.max_validation_samples)
+
+    if not train_examples:
+        raise ValueError("Training split did not contain any examples.")
+    if not validation_examples:
+        raise ValueError("Validation split did not contain any examples.")
+
+    return train_examples, validation_examples, str(dataset_root), train_source, validation_source, source_layout
+
+
+def describe_target_keys(example: dict[str, Any]) -> list[str]:
+    if "target_keys" in example:
+        return example["target_keys"]
+
+    assistant_message = example["messages"][-1]
+    text_blocks = [
+        item.get("text", "")
+        for item in assistant_message["content"]
+        if item.get("type") == "text"
+    ]
+    if not text_blocks:
+        return []
+    try:
+        target = json.loads("".join(text_blocks))
+    except json.JSONDecodeError:
+        return []
+    return sorted(target.keys()) if isinstance(target, dict) else []
+
+
+def print_dry_run_summary(
+    train_examples: list[dict[str, Any]],
+    validation_examples: list[dict[str, Any]],
+    resolved_dataset_root: str,
+    train_source: str,
+    validation_source: str,
+    source_layout: str,
+    args: argparse.Namespace,
+) -> None:
+    print("Qwen training dry run")
+    print(f"  dataset_root: {resolved_dataset_root}")
+    print(f"  source_layout: {source_layout}")
+    print(f"  train_source: {train_source} ({len(train_examples)} examples)")
+    print(f"  validation_source: {validation_source} ({len(validation_examples)} examples)")
+    print(f"  annotation_target_key: {args.annotation_target_key}")
+    print(f"  schema_path: {args.schema_path}")
+    print(f"  train_images_first: {len(train_examples[0]['image_paths'])}")
+    print(f"  validation_images_first: {len(validation_examples[0]['image_paths'])}")
+    print(f"  train_target_keys: {describe_target_keys(train_examples[0])}")
+    print(f"  validation_target_keys: {describe_target_keys(validation_examples[0])}")
+
+
 def apply_chat_template_safely(processor: Any, messages: list[dict[str, Any]], add_generation_prompt: bool) -> str:
     try:
         return processor.apply_chat_template(
@@ -546,6 +813,10 @@ def build_model_load_kwargs(
     BitsAndBytesConfig: Any,
     load_in_4bit: bool,
 ) -> dict[str, Any]:
+    if args.local_files_only:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
     kwargs: dict[str, Any] = {
         "local_files_only": args.local_files_only,
         "attn_implementation": args.attn_implementation,
@@ -584,10 +855,23 @@ def main() -> int:
     args = parse_args()
     set_seed(args.seed)
 
-    train_file = resolve_dataset_file(args.dataset_root, args.train_file)
-    validation_file = resolve_dataset_file(args.dataset_root, args.validation_file)
-    train_examples = load_split(train_file, args.dataset_root)
-    validation_examples = load_split(validation_file, args.dataset_root)
+    train_examples, validation_examples, resolved_dataset_root, train_source, validation_source, source_layout = (
+        load_dataset_splits(args)
+    )
+
+    if args.dry_run:
+        print_dry_run_summary(
+            train_examples=train_examples,
+            validation_examples=validation_examples,
+            resolved_dataset_root=resolved_dataset_root,
+            train_source=train_source,
+            validation_source=validation_source,
+            source_layout=source_layout,
+            args=args,
+        )
+        return 0
+
+    load_in_4bit = resolve_load_in_4bit(args)
 
     (
         torch,
@@ -599,10 +883,9 @@ def main() -> int:
         Trainer,
         TrainingArguments,
         peft_fns,
-    ) = load_runtime_dependencies()
+    ) = load_runtime_dependencies(load_in_4bit=load_in_4bit)
     LoraConfig, get_peft_model, prepare_model_for_kbit_training = peft_fns
 
-    load_in_4bit = resolve_load_in_4bit(args)
     gradient_checkpointing = resolve_gradient_checkpointing(args)
     bf16, fp16 = choose_precision_flags(args)
 
@@ -702,8 +985,12 @@ def main() -> int:
         json.dump(
             {
                 "dataset_root": str(args.dataset_root),
-                "train_file": str(train_file),
-                "validation_file": str(validation_file),
+                "resolved_dataset_root": resolved_dataset_root,
+                "source_layout": source_layout,
+                "train_source": train_source,
+                "validation_source": validation_source,
+                "annotation_target_key": args.annotation_target_key,
+                "schema_path": str(args.schema_path),
                 "model_id": args.model_id,
                 "min_pixels": args.min_pixels,
                 "max_pixels": args.max_pixels,

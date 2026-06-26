@@ -8,10 +8,23 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_IMAGE_PATH = REPO_ROOT / "data" / "Lieferschein-Beispiel.png"
+DEFAULT_SMALL_TEST_IMAGE_PATH = (
+    REPO_ROOT
+    / "data"
+    / "small testing"
+    / "3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1.jpg"
+)
+DEFAULT_SMALL_TEST_EXAMPLE_PATH = (
+    REPO_ROOT
+    / "data"
+    / "small testing"
+    / "3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1_0.json"
+)
+DEFAULT_IMAGE_PATH = DEFAULT_SMALL_TEST_IMAGE_PATH
 DEFAULT_SCHEMA_PATH = Path(__file__).with_name("lieferschein.schema.json")
-DEFAULT_EXAMPLE_PATH = Path(__file__).with_name("lieferschein.example.json")
+DEFAULT_EXAMPLE_PATH = DEFAULT_SMALL_TEST_EXAMPLE_PATH
 DEFAULT_OUTPUT_PATH = REPO_ROOT / "output" / "donut_lieferschein_inference.json"
+DEFAULT_ANNOTATION_TARGET_KEY = "content"
 
 # This checkpoint is a real Hugging Face Donut IE model and can be used as a
 # runnable baseline. It is not trained for our Lieferschein schema.
@@ -66,7 +79,16 @@ def parse_args() -> argparse.Namespace:
         "--example-path",
         type=Path,
         default=DEFAULT_EXAMPLE_PATH,
-        help="Canonical example JSON used as the skeleton/template shape.",
+        help="Example annotation JSON used as the skeleton/template shape.",
+    )
+    parser.add_argument(
+        "--annotation-target-key",
+        default=DEFAULT_ANNOTATION_TARGET_KEY,
+        help=(
+            "Key inside the example annotation JSON to use as the output template. "
+            "The default 'content' matches Donut fine-tuning and ignores annotation metadata. "
+            "Use 'root' for a template that is already the exact target object."
+        ),
     )
     parser.add_argument(
         "--output-path",
@@ -109,6 +131,51 @@ def parse_args() -> argparse.Namespace:
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def extract_json_target(obj: Any, target_key: str) -> Any:
+    if target_key in {"", ".", "root"}:
+        return obj
+
+    target = obj
+    for key in target_key.split("."):
+        if not isinstance(target, dict) or key not in target:
+            if target_key == DEFAULT_ANNOTATION_TARGET_KEY and isinstance(obj, dict):
+                return obj
+            raise KeyError(f"Target key {target_key!r} not found in JSON template.")
+        target = target[key]
+
+    if not isinstance(target, dict):
+        raise TypeError(f"Target key {target_key!r} must resolve to a JSON object.")
+
+    return target
+
+
+def resolve_schema_ref(schema: dict[str, Any], node: Any) -> Any:
+    while isinstance(node, dict) and "$ref" in node:
+        ref = node["$ref"]
+        if not isinstance(ref, str) or not ref.startswith("#/"):
+            return node
+        resolved: Any = schema
+        for part in ref.removeprefix("#/").split("/"):
+            resolved = resolved[part]
+        node = resolved
+    return node
+
+
+def select_schema_node_for_target(schema: Any, target_key: str) -> Any:
+    if not isinstance(schema, dict) or target_key in {"", ".", "root"}:
+        return schema
+
+    node: Any = schema
+    for key in target_key.split("."):
+        node = resolve_schema_ref(schema, node)
+        properties = node.get("properties") if isinstance(node, dict) else None
+        if not isinstance(properties, dict) or key not in properties:
+            return schema
+        node = properties[key]
+
+    return resolve_schema_ref(schema, node)
 
 
 def load_runtime_dependencies() -> tuple[Any, Any, Any, Any]:
@@ -235,8 +302,9 @@ def main() -> int:
         print(f"Example file not found: {args.example_path}", file=sys.stderr)
         return 1
 
-    template = load_json(args.example_path)
+    template = extract_json_target(load_json(args.example_path), args.annotation_target_key)
     schema = load_json(args.schema_path)
+    target_schema = select_schema_node_for_target(schema, args.annotation_target_key)
 
     torch, image_module, DonutProcessor, VisionEncoderDecoderModel = (
         load_runtime_dependencies()
@@ -311,10 +379,11 @@ def main() -> int:
             "image_path": str(args.image_path),
             "schema_path": str(args.schema_path),
             "example_path": str(args.example_path),
+            "annotation_target_key": args.annotation_target_key,
         },
         "guidance": {
             "schema_title": schema.get("title"),
-            "required_fields": schema.get("required", []),
+            "required_fields": target_schema.get("required", []) if isinstance(target_schema, dict) else [],
         },
         "notes": notes,
         "generated": {

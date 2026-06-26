@@ -10,7 +10,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RAW_DATA_DIR = REPO_ROOT / "data" / "raw_data"
 DEFAULT_DATASETS_DIR = REPO_ROOT / "data" / "datasets"
@@ -60,7 +59,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-ratio", type=float, default=DEFAULT_SPLIT_RATIOS[0])
     parser.add_argument("--val-ratio", type=float, default=DEFAULT_SPLIT_RATIOS[1])
     parser.add_argument("--test-ratio", type=float, default=DEFAULT_SPLIT_RATIOS[2])
-    parser.add_argument("--seed", type=int, default=42, help="Seed used for deterministic shuffling.")
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Seed used for deterministic shuffling."
+    )
     parser.add_argument(
         "--overwrite",
         action="store_true",
@@ -69,7 +70,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def validate_split_ratios(train_ratio: float, val_ratio: float, test_ratio: float) -> None:
+def validate_split_ratios(
+    train_ratio: float, val_ratio: float, test_ratio: float
+) -> None:
     ratios = {
         "train_ratio": train_ratio,
         "val_ratio": val_ratio,
@@ -106,10 +109,15 @@ def find_annotation_for_image(image_path: Path) -> Path | None:
 
 
 def find_image_for_annotation(annotation_path: Path) -> Path | None:
-    candidates = [annotation_path.with_suffix(extension) for extension in IMAGE_EXTENSIONS]
+    candidates = [
+        annotation_path.with_suffix(extension) for extension in IMAGE_EXTENSIONS
+    ]
     if annotation_path.stem.endswith("_0"):
         base_stem = annotation_path.stem[:-2]
-        candidates.extend(annotation_path.with_name(f"{base_stem}{extension}") for extension in IMAGE_EXTENSIONS)
+        candidates.extend(
+            annotation_path.with_name(f"{base_stem}{extension}")
+            for extension in IMAGE_EXTENSIONS
+        )
 
     for candidate in candidates:
         if candidate.exists():
@@ -122,7 +130,9 @@ def make_sample_id(raw_data_dir: Path, image_path: Path) -> str:
     return "__".join(relative.parts)
 
 
-def collect_raw_samples(raw_data_dir: Path) -> tuple[list[DatasetSample], list[Path], list[Path]]:
+def collect_raw_samples(
+    raw_data_dir: Path,
+) -> tuple[list[DatasetSample], list[Path], list[Path]]:
     if not raw_data_dir.is_dir():
         raise FileNotFoundError(f"Raw data directory not found: {raw_data_dir}")
 
@@ -131,7 +141,9 @@ def collect_raw_samples(raw_data_dir: Path) -> tuple[list[DatasetSample], list[P
     paired_annotation_paths: set[Path] = set()
 
     image_paths = sorted(
-        path for path in raw_data_dir.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        path
+        for path in raw_data_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
     )
     for image_path in image_paths:
         annotation_path = find_annotation_for_image(image_path)
@@ -153,7 +165,8 @@ def collect_raw_samples(raw_data_dir: Path) -> tuple[list[DatasetSample], list[P
     annotations_without_images = [
         annotation_path
         for annotation_path in sorted(raw_data_dir.rglob("*.json"))
-        if annotation_path not in paired_annotation_paths and find_image_for_annotation(annotation_path) is None
+        if annotation_path not in paired_annotation_paths
+        and find_image_for_annotation(annotation_path) is None
     ]
 
     return samples, images_without_annotations, annotations_without_images
@@ -178,7 +191,9 @@ def split_samples(
     return {
         "train": shuffled[:train_count],
         "val": shuffled[train_count : train_count + val_count],
-        "test": shuffled[train_count + val_count : train_count + val_count + test_count],
+        "test": shuffled[
+            train_count + val_count : train_count + val_count + test_count
+        ],
     }
 
 
@@ -193,13 +208,28 @@ def ensure_output_dir(output_dir: Path, overwrite: bool) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
 
-def make_dataset_output_dir(raw_data_dir: Path, datasets_dir: Path, created_at: datetime | None = None) -> Path:
+def infer_dataset_output_name(raw_data_dir: Path) -> str:
+    if raw_data_dir.name != DEFAULT_RAW_DATA_DIR.name or not raw_data_dir.is_dir():
+        return raw_data_dir.name
+
+    dataset_dirs = sorted(path for path in raw_data_dir.iterdir() if path.is_dir())
+    if len(dataset_dirs) == 1:
+        return dataset_dirs[0].name
+
+    return raw_data_dir.name
+
+
+def make_dataset_output_dir(
+    raw_data_dir: Path, datasets_dir: Path, created_at: datetime | None = None
+) -> Path:
     creation_date = (created_at or datetime.now()).strftime("%Y%m%d")
-    dataset_name = f"{raw_data_dir.name}_{creation_date}"
+    dataset_name = f"{infer_dataset_output_name(raw_data_dir)}_{creation_date}"
     return datasets_dir / dataset_name
 
 
-def copy_sample(sample: DatasetSample, split_name: str, raw_data_dir: Path, output_dir: Path) -> dict[str, Any]:
+def copy_sample(
+    sample: DatasetSample, split_name: str, raw_data_dir: Path, output_dir: Path
+) -> dict[str, Any]:
     image_relative = sample.image_path.relative_to(raw_data_dir)
     annotation_relative = sample.annotation_path.relative_to(raw_data_dir)
 
@@ -217,7 +247,9 @@ def copy_sample(sample: DatasetSample, split_name: str, raw_data_dir: Path, outp
         "image": str(output_image.relative_to(output_dir).as_posix()),
         "annotation": str(output_annotation.relative_to(output_dir).as_posix()),
         "source_image": str(sample.image_path.relative_to(raw_data_dir).as_posix()),
-        "source_annotation": str(sample.annotation_path.relative_to(raw_data_dir).as_posix()),
+        "source_annotation": str(
+            sample.annotation_path.relative_to(raw_data_dir).as_posix()
+        ),
     }
 
 
@@ -276,8 +308,14 @@ def create_train_val_test_dataset(
             "skipped_annotations_without_images": len(missing_images),
         },
         "skipped": {
-            "images_without_annotations": [str(path.relative_to(raw_data_path).as_posix()) for path in missing_annotations],
-            "annotations_without_images": [str(path.relative_to(raw_data_path).as_posix()) for path in missing_images],
+            "images_without_annotations": [
+                str(path.relative_to(raw_data_path).as_posix())
+                for path in missing_annotations
+            ],
+            "annotations_without_images": [
+                str(path.relative_to(raw_data_path).as_posix())
+                for path in missing_images
+            ],
         },
     }
     with (output_path / "dataset_summary.json").open("w", encoding="utf-8") as handle:

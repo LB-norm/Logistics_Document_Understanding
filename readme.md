@@ -1,72 +1,82 @@
 # Logistics Document Understanding
 
-This project explores multiple document information extraction pipelines for scanned real-world documents. The goal is to convert input document images into structured JSON outputs.
+Experimental pipelines for extracting structured information from scanned logistics documents, with a focus on German delivery notes (*Lieferscheine*) and CMR documents. Each pipeline converts a document image into JSON that follows the supplied delivery-note schema.
 
-## Donut Fine-Tuning
+## Included Pipelines
 
-The Donut pipeline lives in [src/Donut](src/Donut). It supports:
+| Pipeline | Purpose | Documentation |
+| --- | --- | --- |
+| Donut | Fine-tune and run the Donut vision encoder-decoder model. | [Donut pipeline](src/Donut/README.md) |
+| Qwen | LoRA/QLoRA fine-tune and run Qwen3.5 vision-language models. | [Qwen pipeline](src/Qwen/README.md) |
+| PaddleOCR-VL | Run PaddleOCR-VL and prepare supervised fine-tuning data for ERNIEKit. | [PaddleOCR-VL pipeline](src/PP_parser/README.md) |
+| Dataset utilities | Create deterministic train/validation/test splits from image and annotation pairs. | [dataset_utils.py](src/utils/dataset_utils.py) |
 
-- schema definition for Lieferschein extraction
-- inference with a Hugging Face Donut checkpoint
-- task-specific fine-tuning on custom labeled data
-- a built-in smoke-test dataset when no dataset path is provided
+The target output schema is [src/Donut/lieferschein.schema.json](src/Donut/lieferschein.schema.json).
 
-### Dataset Format
+## What Is Not Included
 
-The fine-tuning script follows the standard Donut dataset layout:
+Datasets, trained checkpoints, generated documents, inference output, and private research material are intentionally excluded from version control. Provide your own data and model checkpoints when running the pipelines.
+
+## Setup
+
+Use Python 3.10 or later. Python 3.12 is the development environment used for this repository.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+`requirements.txt` installs the general Python dependencies. For GPU execution, install PyTorch and PaddlePaddle wheels that match your CUDA version. The synthetic document generator additionally requires Poppler's `pdftoppm` executable and the system libraries required by WeasyPrint.
+
+## Dataset Format
+
+Donut, Qwen, and the PaddleOCR-VL preparation script accept the same project dataset layout:
 
 ```text
 dataset_root/
 ├── train/
 │   ├── metadata.jsonl
-│   └── <image files>
-└── validation/
+│   ├── images/...
+│   └── annotations/...
+├── val/
+│   ├── metadata.jsonl
+│   ├── images/...
+│   └── annotations/...
+└── test/                         # optional
     ├── metadata.jsonl
-    └── <image files>
+    ├── images/...
+    └── annotations/...
 ```
 
-Each `metadata.jsonl` row must contain:
+Each line in `metadata.jsonl` identifies an image and its annotation file:
 
 ```json
 {
-  "file_name": "example.png",
-  "ground_truth": "{\"gt_parse\": {\"document_type\": \"lieferschein\", \"delivery_note_number\": \"2017042708\"}}"
+  "id": "cmr_example_page_1",
+  "image": "train/images/cmr_example_page_1.jpg",
+  "annotation": "train/annotations/cmr_example_page_1.json"
 }
 ```
 
-Notes:
+By default, the scripts use `annotation["content"]` as the supervised target and ignore annotation metadata. The Donut and Qwen trainers also support their respective native metadata formats; see their pipeline documentation for details.
 
-- `file_name` is relative to the split directory
-- `ground_truth` can be a JSON string, matching Donut conventions
-- `gt_parse` must match the target extraction structure you want Donut to learn
-- for this project, the reference schema is [src/Donut/lieferschein.schema.json](src/Donut/lieferschein.schema.json)
+## Quick Start: Donut
 
-### Smoke Test
-
-If `--dataset-root` is omitted, the training script creates a tiny local smoke-test dataset from the sample Lieferschein and example JSON.
-
-Run a one-step smoke test with the repo venv:
+First validate that the dataset can be read. This does not load a model:
 
 ```bash
-./.venv/bin/python src/Donut/train_finetune.py \
-  --model-id naver-clova-ix/donut-base-finetuned-cord-v2 \
-  --local-files-only \
-  --output-dir models/donut-lieferschein-smoketest \
-  --per-device-train-batch-size 1 \
-  --per-device-eval-batch-size 1 \
-  --gradient-accumulation-steps 1 \
-  --dataloader-num-workers 0 \
-  --max-steps 1 \
-  --num-train-epochs 1
+python src/Donut/train_finetune.py \
+  --dataset-root /path/to/dataset_root \
+  --dry-run
 ```
 
-### Recommended Training Commands
-
-Recommended starting point for a 96 GB GPU:
+Fine-tune Donut on the dataset:
 
 ```bash
-./.venv/bin/python src/Donut/train_finetune.py \
-  --dataset-root /path/to/lieferschein_dataset \
+python src/Donut/train_finetune.py \
+  --dataset-root /path/to/dataset_root \
   --model-id naver-clova-ix/donut-base \
   --output-dir models/donut-lieferschein \
   --task-start-token "<s_lieferschein>" \
@@ -80,84 +90,28 @@ Recommended starting point for a 96 GB GPU:
   --bf16
 ```
 
-This is conservative for 96 GB VRAM. You can likely increase batch size, image size, or sequence length if the dataset requires it.
+The command is a starting point for a high-memory GPU. Reduce batch size, image size, or maximum sequence length for smaller GPUs. CPU training is intended only for parsing checks and smoke tests.
 
-### Lower-Memory Variants
-
-If you have less GPU memory available, reduce memory pressure in this order:
-
-1. lower `--per-device-train-batch-size`
-2. increase `--gradient-accumulation-steps`
-3. reduce `--image-size`
-4. reduce `--max-length`
-5. keep gradient checkpointing enabled
-
-Examples:
-
-`24 GB` class GPU:
+Run a fine-tuned checkpoint on an image:
 
 ```bash
-./.venv/bin/python src/Donut/train_finetune.py \
-  --dataset-root /path/to/lieferschein_dataset \
-  --model-id naver-clova-ix/donut-base \
-  --output-dir models/donut-lieferschein \
-  --task-start-token "<s_lieferschein>" \
-  --image-size 960 720 \
-  --max-length 512 \
-  --per-device-train-batch-size 1 \
-  --per-device-eval-batch-size 1 \
-  --gradient-accumulation-steps 8 \
-  --num-train-epochs 10 \
-  --learning-rate 3e-5 \
-  --bf16
-```
-
-`12-16 GB` class GPU:
-
-```bash
-./.venv/bin/python src/Donut/train_finetune.py \
-  --dataset-root /path/to/lieferschein_dataset \
-  --model-id naver-clova-ix/donut-base \
-  --output-dir models/donut-lieferschein \
-  --task-start-token "<s_lieferschein>" \
-  --image-size 768 576 \
-  --max-length 384 \
-  --per-device-train-batch-size 1 \
-  --per-device-eval-batch-size 1 \
-  --gradient-accumulation-steps 16 \
-  --num-train-epochs 10 \
-  --learning-rate 3e-5 \
-  --bf16
-```
-
-CPU-only debugging:
-
-```bash
-./.venv/bin/python src/Donut/train_finetune.py \
-  --model-id naver-clova-ix/donut-base-finetuned-cord-v2 \
-  --local-files-only \
-  --max-steps 1 \
-  --per-device-train-batch-size 1 \
-  --per-device-eval-batch-size 1 \
-  --gradient-accumulation-steps 1 \
-  --dataloader-num-workers 0
-```
-
-CPU training is only suitable for smoke tests and debugging.
-
-### Inference After Fine-Tuning
-
-Run inference with a fine-tuned checkpoint:
-
-```bash
-./.venv/bin/python src/Donut/run_inference.py \
+python src/Donut/run_inference.py \
+  --image-path /path/to/document.jpg \
   --model-id models/donut-lieferschein \
-  --task-prompt "<s_lieferschein>"
+  --task-prompt "<s_lieferschein>" \
+  --schema-path src/Donut/lieferschein.schema.json \
+  --example-path /path/to/example_annotation.json \
+  --output-path output/result.json
 ```
 
-### Practical Notes
+## Other Workflows
 
-- a schema file helps define and validate the target output, but Donut still needs fine-tuning to learn that schema
-- the default public receipt checkpoint is only a runnable baseline, not a correct Lieferschein model
-- if CUDA is not visible to PyTorch, training will fall back to CPU and become very slow
-- if you use `--local-files-only`, the model must already exist in the local Hugging Face cache
+- Use [src/Qwen/README.md](src/Qwen/README.md) for Qwen dataset formats, LoRA/QLoRA training, and inference.
+- Use [src/PP_parser/README.md](src/PP_parser/README.md) to run PaddleOCR-VL or create ERNIEKit SFT data. PaddleOCR-VL fine-tuning itself requires an ERNIEKit environment.
+- Use [src/dataset_gen](src/dataset_gen) to generate synthetic delivery notes and [src/utils/dataset_utils.py](src/utils/dataset_utils.py) to build dataset splits.
+
+## Notes
+
+- The schema describes the desired output contract; it does not make a base model capable of extracting delivery-note fields without appropriate fine-tuning.
+- The public Donut receipt checkpoint is useful as a runnable baseline, not as a delivery-note model.
+- `--local-files-only` requires all referenced model files to be present in the local Hugging Face cache.
