@@ -3,7 +3,7 @@ venv/
 .venv/
 .vscode/
 .agents/
-.codex/
+.codex
 
 # Python caches
 __pycache__/
