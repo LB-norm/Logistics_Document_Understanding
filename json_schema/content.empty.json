@@ -1,0 +1,155 @@
+{
+  "senderInformation": {
+    "senderNameCompany": null,
+    "senderNamePerson": null,
+    "senderStreet": null,
+    "senderPostcode": null,
+    "senderCity": null,
+    "senderCountryCode": {
+      "region": null,
+      "value": null
+    },
+    "senderContactInformation": {
+      "email": null,
+      "phone": null
+    }
+  },
+  "consigneeInformation": {
+    "consigneeNameCompany": null,
+    "consigneeNamePerson": null,
+    "consigneeStreet": null,
+    "consigneePostcode": null,
+    "consigneeCity": null,
+    "consigneeCountryCode": {
+      "region": null,
+      "value": null
+    },
+    "consigneeContactInformation": {
+      "email": null,
+      "phone": null
+    }
+  },
+  "takingOverTheGoods": {
+    "takingOverTheGoodsPlace": null,
+    "logisticsDateOfArrival": null,
+    "logisticsTimeOfArrival": null,
+    "logisticsDateOfDeparture": null,
+    "logisticsTimeOfDeparture": null
+  },
+  "deliveryOfTheGoods": {
+    "logisticsLocationCity": null,
+    "logisticsLocationOpeningHours": null
+  },
+  "sendersInstructions": {
+    "transportInstructionsDescription": null
+  },
+  "carrierInformation": {
+    "carrierNameCompany": null,
+    "carrierNamePerson": null,
+    "carrierStreet": null,
+    "carrierPostcode": null,
+    "carrierCity": null,
+    "carrierCountryCode": {
+      "region": null,
+      "value": null
+    },
+    "carrierLicensePlate": null,
+    "carrierContactInformation": {
+      "email": null,
+      "phone": null
+    }
+  },
+  "successiveCarrierInformation": {
+    "successiveCarrierNameCompany": null,
+    "successiveCarrierNamePerson": null,
+    "successiveCarrierStreet": null,
+    "successiveCarrierPostcode": null,
+    "successiveCarrierCity": null,
+    "successiveCarrierCountryCode": {
+      "region": null,
+      "value": null
+    },
+    "successiveCarrierContactInformation": {
+      "email": null,
+      "phone": null
+    }
+  },
+  "carrierReservationsAndObservations": {
+    "carrierReservationsObservations": null
+  },
+  "documentsHandedToCarrier": {
+    "documentsRemarks": null
+  },
+  "itemList": [
+    {
+      "marksAndNos": {
+        "logisticsShippingMarksCustomBarcode": null,
+        "logisticsShippingMarksMarkings": null
+      },
+      "numberOfPackages": {
+        "logisticsPackageItemQuantity": null
+      },
+      "methodOfPacking": {
+        "logisticsPackageType": null
+      },
+      "natureOfTheGoods": {
+        "transportCargoIdentification": null
+      },
+      "grossWeightInKg": {
+        "supplyChainConsignmentItemGrossWeight": null
+      },
+      "volumeInM3": {
+        "supplyChainConsignmentItemGrossVolume": null
+      }
+    }
+  ],
+  "toBePaidBy": {
+    "customChargeCarriage": null,
+    "customChargeSupplementary": null,
+    "customChargeCustomsDuties": null,
+    "customChargeOther": null
+  },
+  "signatureOrStampOfTheSender": {
+    "senderSignature": {
+      "type": null,
+      "userName": null,
+      "userCompany": null,
+      "userStreet": null,
+      "userPostCode": null,
+      "userCity": null,
+      "userCountry": null,
+      "data": null,
+      "time": null,
+      "date": null
+    }
+  },
+  "signatureOrStampOfTheCarrier": {
+    "carrierSignature": {
+      "type": null,
+      "userName": null,
+      "userCompany": null,
+      "userStreet": null,
+      "userPostCode": null,
+      "userCity": null,
+      "userCountry": null,
+      "data": null,
+      "time": null,
+      "date": null
+    }
+  },
+  "goodsReceived": {
+    "consigneeSignature": {
+      "type": null,
+      "userName": null,
+      "userCompany": null,
+      "userStreet": null,
+      "userPostCode": null,
+      "userCity": null,
+      "userCountry": null,
+      "date": null,
+      "time": null,
+      "data": null
+    }
+  },
+  "referenceIdentificationNumber": null
+}

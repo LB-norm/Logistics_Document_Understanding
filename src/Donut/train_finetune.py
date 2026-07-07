@@ -12,10 +12,16 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SCHEMA_PATH = Path(__file__).with_name("lieferschein.schema.json")
-DEFAULT_DATASET_ROOT = REPO_ROOT / "data" / "small testing"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.utils.run_utils import RunContext, namespace_to_dict, normalize_trainer_metrics, write_json
+
+DEFAULT_SCHEMA_PATH = REPO_ROOT / "json_schema" / "content.schema.json"
+DEFAULT_TARGET_SKELETON_PATH = REPO_ROOT / "json_schema" / "content.empty.json"
+DEFAULT_DATASET_ROOT = REPO_ROOT / "data" / "datasets" / "250_CMRS_240dpi_20260707"
 DEFAULT_MODEL_ID = "naver-clova-ix/donut-base"
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "models" / "donut-lieferschein"
+DEFAULT_RUNS_DIR = REPO_ROOT / "runs" / "donut"
 DEFAULT_TASK_START_TOKEN = "<s_lieferschein>"
 DEFAULT_ANNOTATION_TARGET_KEY = "content"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
@@ -57,8 +63,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help="Directory for checkpoints and the final fine-tuned model.",
+        default=None,
+        help=(
+            "Directory for checkpoints, metadata, and the final fine-tuned model. "
+            "If omitted, a timestamped directory is created under --runs-dir."
+        ),
+    )
+    parser.add_argument(
+        "--runs-dir",
+        type=Path,
+        default=DEFAULT_RUNS_DIR,
+        help="Parent directory for timestamped Donut fine-tuning runs when --output-dir is omitted.",
+    )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="Optional stable run folder name. Defaults to a timestamp plus dataset name.",
     )
     parser.add_argument(
         "--model-id",
@@ -70,6 +90,15 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_SCHEMA_PATH,
         help="Schema file used to derive custom field special tokens.",
+    )
+    parser.add_argument(
+        "--target-skeleton-path",
+        type=Path,
+        default=DEFAULT_TARGET_SKELETON_PATH,
+        help=(
+            "Empty target JSON skeleton used as the structured output contract. "
+            "Its field names are added as Donut special tokens and recorded in run metadata."
+        ),
     )
     parser.add_argument(
         "--task-start-token",
@@ -84,7 +113,20 @@ def parse_args() -> argparse.Namespace:
         default=(1280, 960),
         help="Processor resize target. Use a larger size only if the document quality requires it.",
     )
-    parser.add_argument("--max-length", type=int, default=768, help="Maximum decoder sequence length.")
+    parser.add_argument(
+        "--align-long-axis",
+        action="store_true",
+        help="Enable Donut long-axis alignment preprocessing before resizing.",
+    )
+    parser.add_argument("--max-length", type=int, default=1024, help="Maximum decoder sequence length.")
+    parser.add_argument(
+        "--no-resize-decoder-position-embeddings",
+        action="store_true",
+        help=(
+            "Do not automatically extend decoder position embeddings when --max-length exceeds "
+            "the base Donut decoder limit."
+        ),
+    )
     parser.add_argument("--num-train-epochs", type=float, default=10.0, help="Training epochs.")
     parser.add_argument("--learning-rate", type=float, default=3e-5, help="Initial learning rate.")
     parser.add_argument("--weight-decay", type=float, default=0.01, help="AdamW weight decay.")
@@ -444,6 +486,40 @@ def choose_validation_split(dataset_root: Path, requested_split: str | None) -> 
     return None
 
 
+def collect_json_field_paths(obj: Any) -> set[str]:
+    paths: set[str] = set()
+
+    def visit(node: Any, prefix: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                path = f"{prefix}.{key}" if prefix else key
+                paths.add(path)
+                visit(value, path)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item, f"{prefix}[]")
+
+    visit(obj, "")
+    return paths
+
+
+def summarize_target_shape(
+    examples: list[dict[str, Any]],
+    skeleton: Any,
+) -> dict[str, Any]:
+    skeleton_paths = collect_json_field_paths(skeleton)
+    example_paths: set[str] = set()
+    for example in examples:
+        example_paths.update(collect_json_field_paths(example["gt_parse"]))
+
+    return {
+        "skeleton_field_count": len(skeleton_paths),
+        "dataset_field_count": len(example_paths),
+        "missing_from_dataset": sorted(skeleton_paths - example_paths),
+        "extra_in_dataset": sorted(example_paths - skeleton_paths),
+    }
+
+
 def cap_examples(examples: list[dict[str, Any]], sample_limit: int | None) -> list[dict[str, Any]]:
     if sample_limit is None:
         return examples
@@ -701,6 +777,94 @@ def validate_image_size_for_encoder(model: Any, image_size: tuple[int, int]) -> 
         )
 
 
+def get_decoder_max_position_embeddings(model: Any) -> int | None:
+    decoder_config = getattr(getattr(model, "decoder", None), "config", None)
+    value = getattr(decoder_config, "max_position_embeddings", None)
+    return value if isinstance(value, int) else None
+
+
+def resize_decoder_position_embeddings(model: Any, torch: Any, max_length: int) -> bool:
+    current_max_length = get_decoder_max_position_embeddings(model)
+    if current_max_length is None or max_length <= current_max_length:
+        return False
+
+    decoder = getattr(getattr(model, "decoder", None), "model", None)
+    decoder_body = getattr(decoder, "decoder", None)
+    old_embeddings = getattr(decoder_body, "embed_positions", None)
+    if old_embeddings is None:
+        raise ValueError(
+            "Cannot resize decoder position embeddings for this model. "
+            "Use --max-length no larger than the checkpoint decoder limit."
+        )
+
+    embedding_cls = type(old_embeddings)
+    new_embeddings = embedding_cls(max_length, old_embeddings.embedding_dim)
+    new_embeddings.to(device=old_embeddings.weight.device, dtype=old_embeddings.weight.dtype)
+
+    with torch.no_grad():
+        copy_rows = min(old_embeddings.weight.shape[0], new_embeddings.weight.shape[0])
+        new_embeddings.weight[:copy_rows].copy_(old_embeddings.weight[:copy_rows])
+        if new_embeddings.weight.shape[0] > copy_rows:
+            mean = old_embeddings.weight.mean().item()
+            std = old_embeddings.weight.std().item()
+            new_embeddings.weight[copy_rows:].normal_(mean=mean, std=std)
+
+    decoder_body.embed_positions = new_embeddings
+    model.decoder.config.max_position_embeddings = max_length
+    if hasattr(model.config, "decoder"):
+        model.config.decoder.max_position_embeddings = max_length
+    return True
+
+
+def summarize_token_lengths(
+    examples: list[dict[str, Any]],
+    processor: Any,
+    max_length: int,
+) -> dict[str, Any]:
+    eos_token = processor.tokenizer.eos_token or ""
+    lengths = [
+        len(
+            processor.tokenizer(
+                example["target_sequence"] + eos_token,
+                add_special_tokens=False,
+            ).input_ids
+        )
+        for example in examples
+    ]
+    sorted_lengths = sorted(lengths)
+    overlength = [
+        {"id": example["id"], "target_tokens": length}
+        for example, length in zip(examples, lengths, strict=True)
+        if length > max_length
+    ]
+    p95_index = max(0, int(len(sorted_lengths) * 0.95) - 1)
+    return {
+        "min": sorted_lengths[0],
+        "max": sorted_lengths[-1],
+        "mean": sum(lengths) / len(lengths),
+        "p50": sorted_lengths[len(sorted_lengths) // 2],
+        "p95": sorted_lengths[p95_index],
+        "over_max_length_count": len(overlength),
+        "over_max_length_examples": overlength[:20],
+    }
+
+
+def validate_target_lengths(
+    examples: list[dict[str, Any]],
+    processor: Any,
+    max_length: int,
+) -> dict[str, Any]:
+    summary = summarize_token_lengths(examples, processor, max_length)
+    if summary["over_max_length_count"] > 0:
+        example_ids = ", ".join(item["id"] for item in summary["over_max_length_examples"][:5])
+        raise ValueError(
+            f"{summary['over_max_length_count']} target sequences exceed --max-length={max_length}. "
+            f"Longest target has {summary['max']} tokens. First overlength examples: {example_ids}. "
+            "Increase --max-length or shorten the supervised target before training."
+        )
+    return summary
+
+
 def describe_target_keys(example: dict[str, Any]) -> list[str]:
     gt_parse = example["gt_parse"]
     if isinstance(gt_parse, dict):
@@ -710,6 +874,7 @@ def describe_target_keys(example: dict[str, Any]) -> list[str]:
 
 def print_dry_run_summary(
     dataset_root: Path,
+    output_dir: Path,
     train_examples: list[dict[str, Any]],
     validation_examples: list[dict[str, Any]],
     train_split: str,
@@ -717,13 +882,16 @@ def print_dry_run_summary(
     source_layout: str,
     annotation_target_key: str,
     schema_tokens: set[str],
+    skeleton_tokens: set[str],
     data_tokens: set[str],
+    target_shape_summary: dict[str, Any],
 ) -> None:
     max_train_chars = max(len(example["target_sequence"]) for example in train_examples)
     max_validation_chars = max(len(example["target_sequence"]) for example in validation_examples)
 
     print("Donut training dry run")
     print(f"  dataset_root: {dataset_root}")
+    print(f"  output_dir: {output_dir}")
     print(f"  source_layout: {source_layout}")
     print(f"  annotation_target_key: {annotation_target_key}")
     print(f"  train_split: {train_split} ({len(train_examples)} examples)")
@@ -733,7 +901,82 @@ def print_dry_run_summary(
     print(f"  max_train_target_chars: {max_train_chars}")
     print(f"  max_validation_target_chars: {max_validation_chars}")
     print(f"  schema_special_tokens: {len(schema_tokens)}")
+    print(f"  skeleton_special_tokens: {len(skeleton_tokens)}")
     print(f"  data_special_tokens: {len(data_tokens)}")
+    print(f"  skeleton_field_count: {target_shape_summary['skeleton_field_count']}")
+    print(f"  dataset_field_count: {target_shape_summary['dataset_field_count']}")
+    print(f"  fields_missing_from_dataset: {len(target_shape_summary['missing_from_dataset'])}")
+    print(f"  fields_extra_in_dataset: {len(target_shape_summary['extra_in_dataset'])}")
+
+
+def count_model_parameters(model: Any) -> dict[str, int]:
+    total = 0
+    trainable = 0
+    for parameter in model.parameters():
+        count = parameter.numel()
+        total += count
+        if parameter.requires_grad:
+            trainable += count
+    return {"total": total, "trainable": trainable}
+
+
+def build_training_arguments(
+    Seq2SeqTrainingArguments: Any,
+    args: argparse.Namespace,
+    output_dir: Path,
+    bf16: bool,
+    fp16: bool,
+    gradient_checkpointing: bool,
+) -> Any:
+    import inspect
+
+    kwargs: dict[str, Any] = {
+        "output_dir": str(output_dir),
+        "num_train_epochs": args.num_train_epochs,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "warmup_steps": args.warmup_steps,
+        "per_device_train_batch_size": args.per_device_train_batch_size,
+        "per_device_eval_batch_size": args.per_device_eval_batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "save_strategy": "steps",
+        "eval_steps": args.eval_steps,
+        "save_steps": args.save_steps,
+        "logging_steps": args.logging_steps,
+        "save_total_limit": args.save_total_limit,
+        "dataloader_num_workers": args.dataloader_num_workers,
+        "remove_unused_columns": False,
+        "predict_with_generate": args.predict_with_generate,
+        "generation_max_length": args.max_length,
+        "generation_num_beams": 1,
+        "max_steps": args.max_steps,
+        "bf16": bf16,
+        "fp16": fp16,
+        "gradient_checkpointing": gradient_checkpointing,
+        "report_to": "none",
+        "do_train": True,
+        "do_eval": True,
+        "load_best_model_at_end": False,
+        "seed": args.seed,
+    }
+    signature = inspect.signature(Seq2SeqTrainingArguments)
+    if "eval_strategy" in signature.parameters:
+        kwargs["eval_strategy"] = "steps"
+    else:
+        kwargs["evaluation_strategy"] = "steps"
+
+    return Seq2SeqTrainingArguments(**kwargs)
+
+
+def build_trainer(Seq2SeqTrainer: Any, processor: Any, **kwargs: Any) -> Any:
+    import inspect
+
+    signature = inspect.signature(Seq2SeqTrainer.__init__)
+    if "processing_class" in signature.parameters:
+        kwargs["processing_class"] = processor
+    else:
+        kwargs["tokenizer"] = processor
+    return Seq2SeqTrainer(**kwargs)
 
 
 def main() -> int:
@@ -741,14 +984,26 @@ def main() -> int:
     set_seed(args.seed)
 
     dataset_root = resolve_dataset_root(args)
+    run = RunContext.create(
+        pipeline_name="donut",
+        runs_dir=args.runs_dir,
+        output_dir=args.output_dir,
+        run_name=args.run_name,
+        dataset_name=dataset_root.name,
+        model_id=args.model_id,
+    )
+    output_dir = run.output_dir
     train_examples, validation_examples, train_split, validation_split, source_layout = load_dataset_splits(
         dataset_root,
         args,
     )
     schema = load_json(args.schema_path)
     target_schema = select_schema_node_for_target(schema, args.annotation_target_key)
+    target_skeleton = load_json(args.target_skeleton_path)
+    target_shape_summary = summarize_target_shape(train_examples + validation_examples, target_skeleton)
 
     schema_tokens = collect_schema_tokens(target_schema, schema)
+    skeleton_tokens = collect_field_tokens_from_gt_parse(target_skeleton)
     data_tokens: set[str] = set()
     for sample in train_examples + validation_examples:
         data_tokens.update(collect_field_tokens_from_gt_parse(sample["gt_parse"]))
@@ -756,6 +1011,7 @@ def main() -> int:
     if args.dry_run:
         print_dry_run_summary(
             dataset_root=dataset_root,
+            output_dir=output_dir,
             train_examples=train_examples,
             validation_examples=validation_examples,
             train_split=train_split,
@@ -763,7 +1019,9 @@ def main() -> int:
             source_layout=source_layout,
             annotation_target_key=args.annotation_target_key,
             schema_tokens=schema_tokens,
+            skeleton_tokens=skeleton_tokens,
             data_tokens=data_tokens,
+            target_shape_summary=target_shape_summary,
         )
         return 0
 
@@ -783,7 +1041,7 @@ def main() -> int:
     validate_image_size_for_encoder(model, args.image_size)
 
     processor.image_processor.size = {"height": args.image_size[0], "width": args.image_size[1]}
-    processor.image_processor.do_align_long_axis = False
+    processor.image_processor.do_align_long_axis = args.align_long_axis
 
     special_tokens = {
         args.task_start_token,
@@ -791,8 +1049,26 @@ def main() -> int:
         "<null/>",
     }
     special_tokens.update(schema_tokens)
+    special_tokens.update(skeleton_tokens)
     special_tokens.update(data_tokens)
-    add_special_tokens(processor, model, special_tokens)
+    added_special_tokens = add_special_tokens(processor, model, special_tokens)
+
+    decoder_max_positions_before = get_decoder_max_position_embeddings(model)
+    decoder_positions_resized = False
+    if decoder_max_positions_before is not None and args.max_length > decoder_max_positions_before:
+        if args.no_resize_decoder_position_embeddings:
+            raise ValueError(
+                f"--max-length={args.max_length} exceeds decoder max_position_embeddings="
+                f"{decoder_max_positions_before}. Remove --no-resize-decoder-position-embeddings "
+                "or choose a shorter --max-length."
+            )
+        decoder_positions_resized = resize_decoder_position_embeddings(model, torch, args.max_length)
+    decoder_max_positions_after = get_decoder_max_position_embeddings(model)
+    target_token_length_summary = validate_target_lengths(
+        train_examples + validation_examples,
+        processor,
+        args.max_length,
+    )
 
     model.config.decoder_start_token_id = processor.tokenizer.convert_tokens_to_ids(args.task_start_token)
     model.config.pad_token_id = processor.tokenizer.pad_token_id
@@ -815,6 +1091,44 @@ def main() -> int:
     if gradient_checkpointing:
         model.gradient_checkpointing_enable()
 
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_sections = {
+        "dataset": {
+            "dataset_root": str(args.dataset_root),
+            "resolved_dataset_root": str(dataset_root),
+            "source_layout": source_layout,
+            "train_split": train_split,
+            "validation_split": validation_split,
+            "train_examples": len(train_examples),
+            "validation_examples": len(validation_examples),
+        },
+        "target": {
+            "annotation_target_key": args.annotation_target_key,
+            "schema_path": str(args.schema_path),
+            "target_skeleton_path": str(args.target_skeleton_path),
+            "shape_summary": target_shape_summary,
+            "schema_special_tokens": len(schema_tokens),
+            "skeleton_special_tokens": len(skeleton_tokens),
+            "data_special_tokens": len(data_tokens),
+            "added_special_tokens": added_special_tokens,
+        },
+        "model": {
+            "base_model_id": args.model_id,
+            "task_start_token": args.task_start_token,
+            "parameter_counts": count_model_parameters(model),
+            "decoder_max_position_embeddings_before": decoder_max_positions_before,
+            "decoder_max_position_embeddings_after": decoder_max_positions_after,
+            "decoder_position_embeddings_resized": decoder_positions_resized,
+        },
+        "preprocessing": {
+            "image_size": list(args.image_size),
+            "align_long_axis": args.align_long_axis,
+            "target_token_lengths": target_token_length_summary,
+        },
+        "training_parameters": namespace_to_dict(args),
+    }
+    run.write_status("running", sections=run_sections)
+
     train_dataset = Dataset.from_list(train_examples)
     validation_dataset = Dataset.from_list(validation_examples)
     data_collator = DonutBatchCollator(
@@ -824,87 +1138,79 @@ def main() -> int:
     )
 
     bf16, fp16 = choose_precision_flags(args)
-    training_args = Seq2SeqTrainingArguments(
-        output_dir=str(args.output_dir),
-        num_train_epochs=args.num_train_epochs,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        warmup_steps=args.warmup_steps,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=args.per_device_eval_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        eval_strategy="steps",
-        save_strategy="steps",
-        eval_steps=args.eval_steps,
-        save_steps=args.save_steps,
-        logging_steps=args.logging_steps,
-        save_total_limit=args.save_total_limit,
-        dataloader_num_workers=args.dataloader_num_workers,
-        remove_unused_columns=False,
-        predict_with_generate=args.predict_with_generate,
-        generation_max_length=args.max_length,
-        generation_num_beams=1,
-        max_steps=args.max_steps,
+    training_args = build_training_arguments(
+        Seq2SeqTrainingArguments=Seq2SeqTrainingArguments,
+        args=args,
+        output_dir=output_dir,
         bf16=bf16,
         fp16=fp16,
         gradient_checkpointing=gradient_checkpointing,
-        report_to="none",
-        do_train=True,
-        do_eval=True,
-        load_best_model_at_end=False,
-        seed=args.seed,
     )
 
-    trainer = Seq2SeqTrainer(
+    trainer = build_trainer(
+        Seq2SeqTrainer,
+        processor=processor,
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=validation_dataset,
         data_collator=data_collator,
-        processing_class=processor,
     )
 
-    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    train_output = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    trainer.save_model(str(args.output_dir))
-    processor.save_pretrained(str(args.output_dir))
+    trainer.save_model(str(output_dir))
+    processor.save_pretrained(str(output_dir))
 
-    with (args.output_dir / "training_config.json").open("w", encoding="utf-8") as handle:
-        json.dump(
-            {
-                "dataset_root": str(args.dataset_root),
-                "resolved_dataset_root": str(dataset_root),
-                "source_layout": source_layout,
-                "train_split": train_split,
-                "validation_split": validation_split,
-                "model_id": args.model_id,
-                "task_start_token": args.task_start_token,
-                "schema_path": str(args.schema_path),
-                "annotation_target_key": args.annotation_target_key,
-                "image_size": list(args.image_size),
-                "max_length": args.max_length,
-                "num_train_epochs": args.num_train_epochs,
-                "learning_rate": args.learning_rate,
-                "per_device_train_batch_size": args.per_device_train_batch_size,
-                "per_device_eval_batch_size": args.per_device_eval_batch_size,
-                "gradient_accumulation_steps": args.gradient_accumulation_steps,
-                "gradient_checkpointing": gradient_checkpointing,
-                "bf16": bf16,
-                "fp16": fp16,
-                "train_examples": len(train_examples),
-                "validation_examples": len(validation_examples),
-            },
-            handle,
-            ensure_ascii=False,
-            indent=2,
-        )
+    run.write_status(
+        "completed",
+        sections=run_sections,
+        metrics={
+            "train": normalize_trainer_metrics(
+                getattr(train_output, "metrics", {}),
+                stage="train",
+            )
+        },
+    )
 
-    print(f"Saved fine-tuned Donut model to {args.output_dir}")
+    write_json(
+        output_dir / "training_config.json",
+        {
+            "dataset_root": str(args.dataset_root),
+            "resolved_dataset_root": str(dataset_root),
+            "source_layout": source_layout,
+            "train_split": train_split,
+            "validation_split": validation_split,
+            "model_id": args.model_id,
+            "task_start_token": args.task_start_token,
+            "schema_path": str(args.schema_path),
+            "target_skeleton_path": str(args.target_skeleton_path),
+            "annotation_target_key": args.annotation_target_key,
+            "image_size": list(args.image_size),
+            "align_long_axis": args.align_long_axis,
+            "max_length": args.max_length,
+            "decoder_max_position_embeddings_before": decoder_max_positions_before,
+            "decoder_max_position_embeddings_after": decoder_max_positions_after,
+            "decoder_position_embeddings_resized": decoder_positions_resized,
+            "target_token_lengths": target_token_length_summary,
+            "num_train_epochs": args.num_train_epochs,
+            "learning_rate": args.learning_rate,
+            "per_device_train_batch_size": args.per_device_train_batch_size,
+            "per_device_eval_batch_size": args.per_device_eval_batch_size,
+            "gradient_accumulation_steps": args.gradient_accumulation_steps,
+            "gradient_checkpointing": gradient_checkpointing,
+            "bf16": bf16,
+            "fp16": fp16,
+            "train_examples": len(train_examples),
+            "validation_examples": len(validation_examples),
+        },
+    )
+
+    print(f"Saved fine-tuned Donut model to {output_dir}")
     inference_example = validation_examples[0]
     inference_command = (
         "python3 src/Donut/run_inference.py "
-        f"--model-id {args.output_dir} "
+        f"--model-id {output_dir} "
         f"--task-prompt {args.task_start_token!r} "
         f"--image-path {inference_example['image_path']!r} "
         f"--annotation-target-key {args.annotation_target_key!r}"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import shutil
 import sys
 from dataclasses import asdict, dataclass
@@ -16,6 +17,7 @@ DEFAULT_DATASETS_DIR = REPO_ROOT / "data" / "datasets"
 DEFAULT_OUTPUT_DIR = DEFAULT_DATASETS_DIR
 DEFAULT_SPLIT_RATIOS = (0.8, 0.1, 0.1)
 IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
+DPI_SUFFIX_RE = re.compile(r"_\d+dpi$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -92,7 +94,15 @@ def validate_split_ratios(
         )
 
 
-def find_annotation_for_image(image_path: Path) -> Path | None:
+def candidate_annotation_stems(image_path: Path) -> list[str]:
+    stems = [image_path.stem]
+    stem_without_dpi = DPI_SUFFIX_RE.sub("", image_path.stem)
+    if stem_without_dpi != image_path.stem:
+        stems.append(stem_without_dpi)
+    return stems
+
+
+def find_annotation_for_image(image_path: Path, raw_data_dir: Path | None = None) -> Path | None:
     exact_match = image_path.with_suffix(".json")
     if exact_match.exists():
         return exact_match
@@ -105,10 +115,29 @@ def find_annotation_for_image(image_path: Path) -> Path | None:
     if wildcard_matches:
         return wildcard_matches[0]
 
+    ground_truth_dirs: list[Path] = []
+    if raw_data_dir is not None:
+        ground_truth_dirs.append(raw_data_dir / "ground_truths")
+    if image_path.parent.name == "images":
+        ground_truth_dirs.append(image_path.parent.parent / "ground_truths")
+
+    checked_dirs: set[Path] = set()
+    for ground_truth_dir in ground_truth_dirs:
+        if ground_truth_dir in checked_dirs or not ground_truth_dir.is_dir():
+            continue
+        checked_dirs.add(ground_truth_dir)
+        for stem in candidate_annotation_stems(image_path):
+            for annotation_name in (f"{stem}.json", f"gt_{stem}.json"):
+                annotation_path = ground_truth_dir / annotation_name
+                if annotation_path.exists():
+                    return annotation_path
+
     return None
 
 
-def find_image_for_annotation(annotation_path: Path) -> Path | None:
+def find_image_for_annotation(
+    annotation_path: Path, raw_data_dir: Path | None = None
+) -> Path | None:
     candidates = [
         annotation_path.with_suffix(extension) for extension in IMAGE_EXTENSIONS
     ]
@@ -122,6 +151,26 @@ def find_image_for_annotation(annotation_path: Path) -> Path | None:
     for candidate in candidates:
         if candidate.exists():
             return candidate
+
+    image_dirs: list[Path] = []
+    if raw_data_dir is not None:
+        image_dirs.append(raw_data_dir / "images")
+    if annotation_path.parent.name == "ground_truths":
+        image_dirs.append(annotation_path.parent.parent / "images")
+
+    base_stem = annotation_path.stem.removeprefix("gt_")
+    checked_dirs: set[Path] = set()
+    for image_dir in image_dirs:
+        if image_dir in checked_dirs or not image_dir.is_dir():
+            continue
+        checked_dirs.add(image_dir)
+        for extension in IMAGE_EXTENSIONS:
+            for candidate in (
+                image_dir / f"{base_stem}{extension}",
+                image_dir / f"{base_stem}_360dpi{extension}",
+            ):
+                if candidate.exists():
+                    return candidate
     return None
 
 
@@ -146,7 +195,7 @@ def collect_raw_samples(
         if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
     )
     for image_path in image_paths:
-        annotation_path = find_annotation_for_image(image_path)
+        annotation_path = find_annotation_for_image(image_path, raw_data_dir)
         if annotation_path is None:
             images_without_annotations.append(image_path)
             continue
@@ -166,7 +215,7 @@ def collect_raw_samples(
         annotation_path
         for annotation_path in sorted(raw_data_dir.rglob("*.json"))
         if annotation_path not in paired_annotation_paths
-        and find_image_for_annotation(annotation_path) is None
+        and find_image_for_annotation(annotation_path, raw_data_dir) is None
     ]
 
     return samples, images_without_annotations, annotations_without_images

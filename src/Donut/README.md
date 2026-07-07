@@ -4,7 +4,7 @@ This folder contains the Donut training and inference scripts for the CMR/Liefer
 
 ## Supported Dataset Layouts
 
-The main project dataset under `data/datasets/raw_data_20260527` is supported directly:
+The current default project dataset under `data/datasets/250_CMRS_240dpi_20260707` is supported directly:
 
 ```text
 dataset_root/
@@ -62,9 +62,7 @@ For flat folders, a single example is reused for validation so the Trainer can r
 Validate dataset parsing without loading the model:
 
 ```bash
-python3 src/Donut/train_finetune.py \
-  --dataset-root data/datasets/raw_data_20260527 \
-  --dry-run
+python3 src/Donut/train_finetune.py --dry-run
 ```
 
 Quick one-example dry run:
@@ -91,34 +89,69 @@ python3 src/Donut/train_finetune.py \
   --per-device-eval-batch-size 1 \
   --gradient-accumulation-steps 1 \
   --dataloader-num-workers 0 \
-  --max-length 128 \
+  --max-length 1024 \
   --image-size 640 480 \
   --no-gradient-checkpointing
 ```
 
-Full dataset training:
+Recommended full dataset training on an NVIDIA RTX 3080 Ti:
 
 ```bash
+source .venv/bin/activate
+
+python3 src/Donut/train_finetune.py --dry-run
+
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 python3 src/Donut/train_finetune.py \
-  --dataset-root data/datasets/raw_data_20260527 \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707 \
   --model-id naver-clova-ix/donut-base \
-  --output-dir models/donut-lieferschein \
   --task-start-token "<s_lieferschein>" \
+  --schema-path json_schema/content.schema.json \
+  --target-skeleton-path json_schema/content.empty.json \
   --image-size 1280 960 \
-  --max-length 768 \
-  --per-device-train-batch-size 2 \
-  --per-device-eval-batch-size 2 \
-  --gradient-accumulation-steps 4 \
+  --max-length 1024 \
+  --per-device-train-batch-size 1 \
+  --per-device-eval-batch-size 1 \
+  --gradient-accumulation-steps 8 \
   --num-train-epochs 10 \
   --learning-rate 3e-5 \
-  --bf16
+  --warmup-steps 50 \
+  --eval-steps 25 \
+  --save-steps 25 \
+  --logging-steps 5 \
+  --dataloader-num-workers 4 \
+  --fp16
+```
+
+When `--output-dir` is omitted, the trainer creates a timestamped run folder under `runs/donut/`. Each run contains checkpoints, final model weights, `training_config.json`, and `run_metadata.json` with dataset, target skeleton, model, parameter, duration, and metric details. Run folder creation and normalized Trainer metric serialization are handled by the shared utilities in `src/utils/run_utils.py`, so the same metadata format can be reused by Qwen and later evaluation pipelines.
+
+If the 3080 Ti runs out of memory, keep `--max-length 1024` and reduce the image size first:
+
+```bash
+--image-size 960 720
+```
+
+or, more aggressively:
+
+```bash
+--image-size 768 576
+```
+
+Resume an interrupted run from a saved checkpoint:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+python3 src/Donut/train_finetune.py \
+  --output-dir runs/donut/<run-name> \
+  --resume-from-checkpoint runs/donut/<run-name>/checkpoint-<step> \
+  --fp16
 ```
 
 The script automatically uses `val/metadata.jsonl` when `validation/metadata.jsonl` is not present. Pass `--validation-split` to override that.
 
 ## Target Shape
 
-The target JSON is the CMR content object defined by `src/Donut/lieferschein.schema.json`, not the annotation wrapper. With the default settings, the model learns to generate fields such as:
+The target JSON is the CMR content object defined by `json_schema/content.empty.json` and `json_schema/content.schema.json`, not the annotation wrapper. With the default settings, the model learns to generate fields such as:
 
 - `senderInformation`
 - `consigneeInformation`
@@ -129,12 +162,16 @@ The target JSON is the CMR content object defined by `src/Donut/lieferschein.sch
 
 Use `--annotation-target-key root` only if you intentionally want to train on the complete annotation object including metadata.
 
+The trainer adds field names from the schema, empty skeleton, and dataset annotations as Donut special tokens. It validates tokenized target lengths after adding those tokens and fails before training if any label sequence would be truncated. If `--max-length` exceeds the base Donut decoder position limit, decoder position embeddings are extended automatically unless `--no-resize-decoder-position-embeddings` is passed.
+
 ## Inference
 
 After training, run inference with the fine-tuned checkpoint:
 
 ```bash
 python3 src/Donut/run_inference.py \
-  --model-id models/donut-lieferschein \
-  --task-prompt "<s_lieferschein>"
+  --model-id runs/donut/<run-name> \
+  --task-prompt "<s_lieferschein>" \
+  --image-path data/datasets/250_CMRS_240dpi_20260707/val/images/images/<image-file>.png \
+  --schema-path json_schema/content.schema.json
 ```

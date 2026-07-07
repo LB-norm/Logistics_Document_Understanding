@@ -11,7 +11,7 @@ Experimental pipelines for extracting structured information from scanned logist
 | PaddleOCR-VL | Run PaddleOCR-VL and prepare supervised fine-tuning data for ERNIEKit. | [PaddleOCR-VL pipeline](src/PP_parser/README.md) |
 | Dataset utilities | Create deterministic train/validation/test splits from image and annotation pairs. | [dataset_utils.py](src/utils/dataset_utils.py) |
 
-The target output schema is [src/Donut/lieferschein.schema.json](src/Donut/lieferschein.schema.json).
+The target output contract is defined by [json_schema/content.empty.json](json_schema/content.empty.json) and [json_schema/content.schema.json](json_schema/content.schema.json).
 
 ## What Is Not Included
 
@@ -67,21 +67,20 @@ By default, the scripts use `annotation["content"]` as the supervised target and
 First validate that the dataset can be read. This does not load a model:
 
 ```bash
-python src/Donut/train_finetune.py \
-  --dataset-root /path/to/dataset_root \
-  --dry-run
+python src/Donut/train_finetune.py --dry-run
 ```
 
 Fine-tune Donut on the dataset:
 
 ```bash
 python src/Donut/train_finetune.py \
-  --dataset-root /path/to/dataset_root \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707 \
   --model-id naver-clova-ix/donut-base \
-  --output-dir models/donut-lieferschein \
   --task-start-token "<s_lieferschein>" \
+  --schema-path json_schema/content.schema.json \
+  --target-skeleton-path json_schema/content.empty.json \
   --image-size 1280 960 \
-  --max-length 768 \
+  --max-length 1024 \
   --per-device-train-batch-size 2 \
   --per-device-eval-batch-size 2 \
   --gradient-accumulation-steps 4 \
@@ -90,16 +89,16 @@ python src/Donut/train_finetune.py \
   --bf16
 ```
 
-The command is a starting point for a high-memory GPU. Reduce batch size, image size, or maximum sequence length for smaller GPUs. CPU training is intended only for parsing checks and smoke tests.
+When `--output-dir` is omitted, the trainer creates a timestamped run folder under `runs/donut/` containing checkpoints, final weights, `training_config.json`, and `run_metadata.json`. The run-folder and normalized metric helpers live in `src/utils/run_utils.py` so Qwen and later evaluation pipelines can use the same metadata shape. The command is a starting point for a high-memory GPU. Reduce batch size or image size for smaller GPUs. CPU training is intended only for parsing checks and smoke tests.
 
 Run a fine-tuned checkpoint on an image:
 
 ```bash
 python src/Donut/run_inference.py \
   --image-path /path/to/document.jpg \
-  --model-id models/donut-lieferschein \
+  --model-id runs/donut/<run-name> \
   --task-prompt "<s_lieferschein>" \
-  --schema-path src/Donut/lieferschein.schema.json \
+  --schema-path json_schema/content.schema.json \
   --example-path /path/to/example_annotation.json \
   --output-path output/result.json
 ```
@@ -113,5 +112,6 @@ python src/Donut/run_inference.py \
 ## Notes
 
 - The schema describes the desired output contract; it does not make a base model capable of extracting delivery-note fields without appropriate fine-tuning.
+- Donut training validates tokenized target lengths after adding schema/skeleton special tokens and refuses to train if labels would be truncated.
 - The public Donut receipt checkpoint is useful as a runnable baseline, not as a delivery-note model.
 - `--local-files-only` requires all referenced model files to be present in the local Hugging Face cache.

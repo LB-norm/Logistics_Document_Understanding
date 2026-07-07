@@ -1,0 +1,579 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "data/datasets/250_CMRS_360dpi_20260707/content.schema.json",
+  "title": "CMR Content Annotation Output",
+  "description": "JSON Schema for the content object used as the VLM target in data/datasets/250_CMRS_360dpi_20260707. The annotation metadata wrapper is intentionally excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "senderInformation",
+    "consigneeInformation",
+    "takingOverTheGoods",
+    "deliveryOfTheGoods",
+    "sendersInstructions",
+    "carrierInformation",
+    "successiveCarrierInformation",
+    "carrierReservationsAndObservations",
+    "documentsHandedToCarrier",
+    "itemList",
+    "toBePaidBy",
+    "signatureOrStampOfTheSender",
+    "signatureOrStampOfTheCarrier",
+    "goodsReceived",
+    "referenceIdentificationNumber"
+  ],
+  "properties": {
+    "senderInformation": {
+      "$ref": "#/$defs/sender_information"
+    },
+    "consigneeInformation": {
+      "$ref": "#/$defs/consignee_information"
+    },
+    "takingOverTheGoods": {
+      "$ref": "#/$defs/taking_over_the_goods"
+    },
+    "deliveryOfTheGoods": {
+      "$ref": "#/$defs/delivery_of_the_goods"
+    },
+    "sendersInstructions": {
+      "$ref": "#/$defs/senders_instructions"
+    },
+    "carrierInformation": {
+      "$ref": "#/$defs/carrier_information"
+    },
+    "successiveCarrierInformation": {
+      "$ref": "#/$defs/successive_carrier_information"
+    },
+    "carrierReservationsAndObservations": {
+      "$ref": "#/$defs/carrier_reservations_and_observations"
+    },
+    "documentsHandedToCarrier": {
+      "$ref": "#/$defs/documents_handed_to_carrier"
+    },
+    "itemList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "toBePaidBy": {
+      "$ref": "#/$defs/to_be_paid_by"
+    },
+    "signatureOrStampOfTheSender": {
+      "$ref": "#/$defs/signature_or_stamp_of_the_sender"
+    },
+    "signatureOrStampOfTheCarrier": {
+      "$ref": "#/$defs/signature_or_stamp_of_the_carrier"
+    },
+    "goodsReceived": {
+      "$ref": "#/$defs/goods_received"
+    },
+    "referenceIdentificationNumber": {
+      "$ref": "#/$defs/nullable_string"
+    }
+  },
+  "$defs": {
+    "nullable_string": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nullable_string_or_number": {
+      "type": [
+        "string",
+        "number",
+        "null"
+      ]
+    },
+    "nullable_string_or_integer": {
+      "type": [
+        "string",
+        "integer",
+        "null"
+      ]
+    },
+    "nullable_number": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "country_code": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "region",
+        "value"
+      ],
+      "properties": {
+        "region": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "value": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "contact_information": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "email",
+        "phone"
+      ],
+      "properties": {
+        "email": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "phone": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "sender_information": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "senderNameCompany",
+        "senderNamePerson",
+        "senderStreet",
+        "senderPostcode",
+        "senderCity",
+        "senderCountryCode",
+        "senderContactInformation"
+      ],
+      "properties": {
+        "senderNameCompany": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "senderNamePerson": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "senderStreet": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "senderPostcode": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "senderCity": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "senderCountryCode": {
+          "$ref": "#/$defs/country_code"
+        },
+        "senderContactInformation": {
+          "$ref": "#/$defs/contact_information"
+        }
+      }
+    },
+    "consignee_information": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consigneeNameCompany",
+        "consigneeNamePerson",
+        "consigneeStreet",
+        "consigneePostcode",
+        "consigneeCity",
+        "consigneeCountryCode",
+        "consigneeContactInformation"
+      ],
+      "properties": {
+        "consigneeNameCompany": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "consigneeNamePerson": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "consigneeStreet": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "consigneePostcode": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "consigneeCity": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "consigneeCountryCode": {
+          "$ref": "#/$defs/country_code"
+        },
+        "consigneeContactInformation": {
+          "$ref": "#/$defs/contact_information"
+        }
+      }
+    },
+    "taking_over_the_goods": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "takingOverTheGoodsPlace",
+        "logisticsDateOfArrival",
+        "logisticsTimeOfArrival",
+        "logisticsDateOfDeparture",
+        "logisticsTimeOfDeparture"
+      ],
+      "properties": {
+        "takingOverTheGoodsPlace": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "logisticsDateOfArrival": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "logisticsTimeOfArrival": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "logisticsDateOfDeparture": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "logisticsTimeOfDeparture": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "delivery_of_the_goods": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logisticsLocationCity",
+        "logisticsLocationOpeningHours"
+      ],
+      "properties": {
+        "logisticsLocationCity": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "logisticsLocationOpeningHours": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "senders_instructions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transportInstructionsDescription"
+      ],
+      "properties": {
+        "transportInstructionsDescription": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "carrier_information": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "carrierNameCompany",
+        "carrierNamePerson",
+        "carrierStreet",
+        "carrierPostcode",
+        "carrierCity",
+        "carrierCountryCode",
+        "carrierLicensePlate",
+        "carrierContactInformation"
+      ],
+      "properties": {
+        "carrierNameCompany": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "carrierNamePerson": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "carrierStreet": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "carrierPostcode": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "carrierCity": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "carrierCountryCode": {
+          "$ref": "#/$defs/country_code"
+        },
+        "carrierLicensePlate": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "carrierContactInformation": {
+          "$ref": "#/$defs/contact_information"
+        }
+      }
+    },
+    "successive_carrier_information": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "successiveCarrierNameCompany",
+        "successiveCarrierNamePerson",
+        "successiveCarrierStreet",
+        "successiveCarrierPostcode",
+        "successiveCarrierCity",
+        "successiveCarrierCountryCode",
+        "successiveCarrierContactInformation"
+      ],
+      "properties": {
+        "successiveCarrierNameCompany": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "successiveCarrierNamePerson": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "successiveCarrierStreet": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "successiveCarrierPostcode": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "successiveCarrierCity": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "successiveCarrierCountryCode": {
+          "$ref": "#/$defs/country_code"
+        },
+        "successiveCarrierContactInformation": {
+          "$ref": "#/$defs/contact_information"
+        }
+      }
+    },
+    "carrier_reservations_and_observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "carrierReservationsObservations"
+      ],
+      "properties": {
+        "carrierReservationsObservations": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "documents_handed_to_carrier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentsRemarks"
+      ],
+      "properties": {
+        "documentsRemarks": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "marksAndNos",
+        "numberOfPackages",
+        "methodOfPacking",
+        "natureOfTheGoods",
+        "grossWeightInKg",
+        "volumeInM3"
+      ],
+      "properties": {
+        "marksAndNos": {
+          "$ref": "#/$defs/marks_and_nos"
+        },
+        "numberOfPackages": {
+          "$ref": "#/$defs/number_of_packages"
+        },
+        "methodOfPacking": {
+          "$ref": "#/$defs/method_of_packing"
+        },
+        "natureOfTheGoods": {
+          "$ref": "#/$defs/nature_of_the_goods"
+        },
+        "grossWeightInKg": {
+          "$ref": "#/$defs/gross_weight_in_kg"
+        },
+        "volumeInM3": {
+          "$ref": "#/$defs/volume_in_m3"
+        }
+      }
+    },
+    "marks_and_nos": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logisticsShippingMarksCustomBarcode",
+        "logisticsShippingMarksMarkings"
+      ],
+      "properties": {
+        "logisticsShippingMarksCustomBarcode": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "logisticsShippingMarksMarkings": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "number_of_packages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logisticsPackageItemQuantity"
+      ],
+      "properties": {
+        "logisticsPackageItemQuantity": {
+          "$ref": "#/$defs/nullable_string_or_integer"
+        }
+      }
+    },
+    "method_of_packing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logisticsPackageType"
+      ],
+      "properties": {
+        "logisticsPackageType": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "nature_of_the_goods": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transportCargoIdentification"
+      ],
+      "properties": {
+        "transportCargoIdentification": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "gross_weight_in_kg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supplyChainConsignmentItemGrossWeight"
+      ],
+      "properties": {
+        "supplyChainConsignmentItemGrossWeight": {
+          "$ref": "#/$defs/nullable_string_or_number"
+        }
+      }
+    },
+    "volume_in_m3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supplyChainConsignmentItemGrossVolume"
+      ],
+      "properties": {
+        "supplyChainConsignmentItemGrossVolume": {
+          "$ref": "#/$defs/nullable_number"
+        }
+      }
+    },
+    "to_be_paid_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "customChargeCarriage",
+        "customChargeSupplementary",
+        "customChargeCustomsDuties",
+        "customChargeOther"
+      ],
+      "properties": {
+        "customChargeCarriage": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "customChargeSupplementary": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "customChargeCustomsDuties": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "customChargeOther": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "userName",
+        "userCompany",
+        "userStreet",
+        "userPostCode",
+        "userCity",
+        "userCountry",
+        "data",
+        "time",
+        "date"
+      ],
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userName": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userCompany": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userStreet": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userPostCode": {
+          "$ref": "#/$defs/nullable_string_or_integer"
+        },
+        "userCity": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userCountry": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "data": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "time": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "date": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "signature_or_stamp_of_the_sender": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "senderSignature"
+      ],
+      "properties": {
+        "senderSignature": {
+          "$ref": "#/$defs/signature"
+        }
+      }
+    },
+    "signature_or_stamp_of_the_carrier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "carrierSignature"
+      ],
+      "properties": {
+        "carrierSignature": {
+          "$ref": "#/$defs/signature"
+        }
+      }
+    },
+    "goods_received": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consigneeSignature"
+      ],
+      "properties": {
+        "consigneeSignature": {
+          "$ref": "#/$defs/signature"
+        }
+      }
+    }
+  }
+}
