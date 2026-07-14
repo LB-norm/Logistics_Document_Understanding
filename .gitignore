@@ -20,6 +20,8 @@ theory/
 output/
 synthetic_lieferscheine/
 augraphy_cache/
+runs/
+tmp/
 
 # Downloaded and derived product-name datasets
 src/dataset_gen/*.jsonl

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "data/datasets/250_CMRS_360dpi_20260707/content.schema.json",
+  "$id": "data/datasets/250_CMRS_240dpi_20260707/content.schema.json",
   "title": "CMR Content Annotation Output",
-  "description": "JSON Schema for the content object used as the VLM target in data/datasets/250_CMRS_360dpi_20260707. The annotation metadata wrapper is intentionally excluded.",
+  "description": "JSON Schema for the content object used as the VLM target in data/datasets/250_CMRS_240dpi_20260707. The annotation metadata wrapper is intentionally excluded.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -115,17 +115,25 @@
         }
       }
     },
+    "country_code_value_only": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
     "contact_information": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "email",
         "phone"
       ],
       "properties": {
-        "email": {
-          "$ref": "#/$defs/nullable_string"
-        },
         "phone": {
           "$ref": "#/$defs/nullable_string"
         }
@@ -176,8 +184,7 @@
         "consigneeStreet",
         "consigneePostcode",
         "consigneeCity",
-        "consigneeCountryCode",
-        "consigneeContactInformation"
+        "consigneeCountryCode"
       ],
       "properties": {
         "consigneeNameCompany": {
@@ -197,9 +204,6 @@
         },
         "consigneeCountryCode": {
           "$ref": "#/$defs/country_code"
-        },
-        "consigneeContactInformation": {
-          "$ref": "#/$defs/contact_information"
         }
       }
     },
@@ -209,9 +213,7 @@
       "required": [
         "takingOverTheGoodsPlace",
         "logisticsDateOfArrival",
-        "logisticsTimeOfArrival",
-        "logisticsDateOfDeparture",
-        "logisticsTimeOfDeparture"
+        "logisticsDateOfDeparture"
       ],
       "properties": {
         "takingOverTheGoodsPlace": {
@@ -220,13 +222,7 @@
         "logisticsDateOfArrival": {
           "$ref": "#/$defs/nullable_string"
         },
-        "logisticsTimeOfArrival": {
-          "$ref": "#/$defs/nullable_string"
-        },
         "logisticsDateOfDeparture": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "logisticsTimeOfDeparture": {
           "$ref": "#/$defs/nullable_string"
         }
       }
@@ -269,8 +265,7 @@
         "carrierPostcode",
         "carrierCity",
         "carrierCountryCode",
-        "carrierLicensePlate",
-        "carrierContactInformation"
+        "carrierLicensePlate"
       ],
       "properties": {
         "carrierNameCompany": {
@@ -293,9 +288,6 @@
         },
         "carrierLicensePlate": {
           "$ref": "#/$defs/nullable_string"
-        },
-        "carrierContactInformation": {
-          "$ref": "#/$defs/contact_information"
         }
       }
     },
@@ -304,7 +296,6 @@
       "additionalProperties": false,
       "required": [
         "successiveCarrierNameCompany",
-        "successiveCarrierNamePerson",
         "successiveCarrierStreet",
         "successiveCarrierPostcode",
         "successiveCarrierCity",
@@ -313,9 +304,6 @@
       ],
       "properties": {
         "successiveCarrierNameCompany": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "successiveCarrierNamePerson": {
           "$ref": "#/$defs/nullable_string"
         },
         "successiveCarrierStreet": {
@@ -328,7 +316,7 @@
           "$ref": "#/$defs/nullable_string"
         },
         "successiveCarrierCountryCode": {
-          "$ref": "#/$defs/country_code"
+          "$ref": "#/$defs/country_code_value_only"
         },
         "successiveCarrierContactInformation": {
           "$ref": "#/$defs/contact_information"
@@ -471,27 +459,87 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "customChargeCarriage",
-        "customChargeSupplementary",
-        "customChargeCustomsDuties",
-        "customChargeOther"
+        "customChargeCarriage"
       ],
       "properties": {
         "customChargeCarriage": {
           "$ref": "#/$defs/nullable_string"
-        },
-        "customChargeSupplementary": {
+        }
+      }
+    },
+    "sender_signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "userName",
+        "userCompany",
+        "userStreet",
+        "userPostCode",
+        "userCity",
+        "userCountry"
+      ],
+      "properties": {
+        "userName": {
           "$ref": "#/$defs/nullable_string"
         },
-        "customChargeCustomsDuties": {
+        "userCompany": {
           "$ref": "#/$defs/nullable_string"
         },
-        "customChargeOther": {
+        "userStreet": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userPostCode": {
+          "$ref": "#/$defs/nullable_string_or_integer"
+        },
+        "userCity": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userCountry": {
           "$ref": "#/$defs/nullable_string"
         }
       }
     },
-    "signature": {
+    "carrier_signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "userName",
+        "userCompany",
+        "userStreet",
+        "userPostCode",
+        "userCity",
+        "userCountry",
+        "data",
+        "date"
+      ],
+      "properties": {
+        "userName": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userCompany": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userStreet": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userPostCode": {
+          "$ref": "#/$defs/nullable_string_or_integer"
+        },
+        "userCity": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "userCountry": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "data": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "date": {
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+    "consignee_signature": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -502,9 +550,8 @@
         "userPostCode",
         "userCity",
         "userCountry",
-        "data",
-        "time",
-        "date"
+        "date",
+        "time"
       ],
       "properties": {
         "type": {
@@ -528,13 +575,10 @@
         "userCountry": {
           "$ref": "#/$defs/nullable_string"
         },
-        "data": {
+        "date": {
           "$ref": "#/$defs/nullable_string"
         },
         "time": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "date": {
           "$ref": "#/$defs/nullable_string"
         }
       }
@@ -547,7 +591,7 @@
       ],
       "properties": {
         "senderSignature": {
-          "$ref": "#/$defs/signature"
+          "$ref": "#/$defs/sender_signature"
         }
       }
     },
@@ -559,7 +603,7 @@
       ],
       "properties": {
         "carrierSignature": {
-          "$ref": "#/$defs/signature"
+          "$ref": "#/$defs/carrier_signature"
         }
       }
     },
@@ -571,7 +615,7 @@
       ],
       "properties": {
         "consigneeSignature": {
-          "$ref": "#/$defs/signature"
+          "$ref": "#/$defs/consignee_signature"
         }
       }
     }

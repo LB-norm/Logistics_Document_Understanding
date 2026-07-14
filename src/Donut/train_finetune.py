@@ -16,6 +16,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.utils.run_utils import RunContext, namespace_to_dict, normalize_trainer_metrics, write_json
+from src.utils.training_history import (
+    prune_checkpoints_to_best_and_last,
+    summarize_checkpoints,
+    summarize_training_history,
+)
+from src.utils.training_plots import generate_training_plots
 
 DEFAULT_SCHEMA_PATH = REPO_ROOT / "json_schema" / "content.schema.json"
 DEFAULT_TARGET_SKELETON_PATH = REPO_ROOT / "json_schema" / "content.empty.json"
@@ -156,8 +162,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--save-total-limit",
         type=int,
-        default=3,
-        help="Maximum number of checkpoints to keep on disk.",
+        default=2,
+        help="Maximum number of checkpoints to keep on disk. Donut training keeps best and last only.",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument(
@@ -215,6 +221,23 @@ def parse_args() -> argparse.Namespace:
         help="Parse the dataset and schema, print a summary, then exit before loading model dependencies.",
     )
     return parser.parse_args()
+
+
+def apply_checkpoint_policy(args: argparse.Namespace) -> None:
+    if args.save_steps != args.eval_steps:
+        print(
+            "Overriding --save-steps to match --eval-steps so eval-loss checkpoint selection is exact "
+            f"({args.save_steps} -> {args.eval_steps}).",
+            file=sys.stderr,
+        )
+        args.save_steps = args.eval_steps
+    if args.save_total_limit != 2:
+        print(
+            "Overriding --save-total-limit to 2 so only the best and last checkpoints are retained "
+            f"({args.save_total_limit} -> 2).",
+            file=sys.stderr,
+        )
+        args.save_total_limit = 2
 
 
 def load_runtime_dependencies() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
@@ -539,6 +562,17 @@ def split_flat_examples(
     random.Random(seed).shuffle(shuffled)
     validation_size = max(1, round(len(shuffled) * 0.1))
     return shuffled[validation_size:], shuffled[:validation_size]
+
+
+def build_trainer_dataset_records(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": example["id"],
+            "image_path": example["image_path"],
+            "target_sequence": example["target_sequence"],
+        }
+        for example in examples
+    ]
 
 
 def load_dataset_splits(
@@ -956,7 +990,9 @@ def build_training_arguments(
         "report_to": "none",
         "do_train": True,
         "do_eval": True,
-        "load_best_model_at_end": False,
+        "load_best_model_at_end": True,
+        "metric_for_best_model": "eval_loss",
+        "greater_is_better": False,
         "seed": args.seed,
     }
     signature = inspect.signature(Seq2SeqTrainingArguments)
@@ -979,8 +1015,35 @@ def build_trainer(Seq2SeqTrainer: Any, processor: Any, **kwargs: Any) -> Any:
     return Seq2SeqTrainer(**kwargs)
 
 
+def trainer_state_to_dict(trainer: Any) -> dict[str, Any] | None:
+    state = getattr(trainer, "state", None)
+    if state is None:
+        return None
+    if hasattr(state, "to_json_string"):
+        return json.loads(state.to_json_string())
+    if hasattr(state, "__dict__"):
+        return dict(state.__dict__)
+    return None
+
+
+def save_trainer_state(trainer: Any, output_dir: Path) -> dict[str, Any] | None:
+    state = getattr(trainer, "state", None)
+    if state is None:
+        return None
+    state_path = output_dir / "trainer_state.json"
+    if hasattr(state, "save_to_json"):
+        state.save_to_json(str(state_path))
+        return trainer_state_to_dict(trainer)
+
+    state_dict = trainer_state_to_dict(trainer)
+    if state_dict is not None:
+        write_json(state_path, state_dict)
+    return state_dict
+
+
 def main() -> int:
     args = parse_args()
+    apply_checkpoint_policy(args)
     set_seed(args.seed)
 
     dataset_root = resolve_dataset_root(args)
@@ -1126,11 +1189,20 @@ def main() -> int:
             "target_token_lengths": target_token_length_summary,
         },
         "training_parameters": namespace_to_dict(args),
+        "checkpoint_policy": {
+            "retained": "best_and_last",
+            "metric": "eval_loss",
+            "greater_is_better": False,
+            "save_total_limit": args.save_total_limit,
+            "save_steps": args.save_steps,
+            "eval_steps": args.eval_steps,
+            "load_best_model_at_end": True,
+        },
     }
     run.write_status("running", sections=run_sections)
 
-    train_dataset = Dataset.from_list(train_examples)
-    validation_dataset = Dataset.from_list(validation_examples)
+    train_dataset = Dataset.from_list(build_trainer_dataset_records(train_examples))
+    validation_dataset = Dataset.from_list(build_trainer_dataset_records(validation_examples))
     data_collator = DonutBatchCollator(
         processor=processor,
         image_module=image_module,
@@ -1158,13 +1230,24 @@ def main() -> int:
     )
 
     train_output = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    trainer_state = save_trainer_state(trainer, output_dir)
+    checkpoint_summary = prune_checkpoints_to_best_and_last(output_dir, state=trainer_state)
+    if not checkpoint_summary["best"]["exists"] or not checkpoint_summary["last"]["exists"]:
+        checkpoint_summary = summarize_checkpoints(output_dir, state=trainer_state)
+    training_summary = summarize_training_history(trainer_state)
+    plot_summary = generate_training_plots(output_dir)
 
     trainer.save_model(str(output_dir))
     processor.save_pretrained(str(output_dir))
 
     run.write_status(
         "completed",
-        sections=run_sections,
+        sections={
+            **run_sections,
+            "training_summary": training_summary,
+            "checkpoints": checkpoint_summary,
+            "plots": plot_summary,
+        },
         metrics={
             "train": normalize_trainer_metrics(
                 getattr(train_output, "metrics", {}),

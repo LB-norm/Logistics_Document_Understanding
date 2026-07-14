@@ -1,0 +1,6 @@
+full CMR image
+→ field detector predicts sender_field, consignee_field, carrier_field, goods_field, ...
+→ expand each detected box/polygon by a margin
+→ crop each region
+→ OCR/VLM extracts the content from that crop
+→ downstream LLM maps crop content into final JSON

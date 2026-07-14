@@ -5,6 +5,7 @@ import json
 import random
 import re
 import shutil
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -307,6 +308,138 @@ def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def convert_pdf_to_pngs(
+    pdf_path: Path | str,
+    output_dir: Path | str | None = None,
+    dpi: int = 240,
+    overwrite: bool = False,
+    backend: str = "auto",
+    pdftoppm_executable: str = "pdftoppm",
+) -> list[Path]:
+    """Render a PDF to PNG files at the requested DPI."""
+    if dpi <= 0:
+        raise ValueError(f"dpi must be a positive integer. Received {dpi}.")
+    if backend not in {"auto", "pymupdf", "pdftoppm"}:
+        raise ValueError(f"Unsupported PDF render backend: {backend}")
+
+    pdf = Path(pdf_path)
+    if not pdf.is_file():
+        raise FileNotFoundError(f"PDF file not found: {pdf}")
+    if pdf.suffix.lower() != ".pdf":
+        raise ValueError(f"Expected a .pdf file, received: {pdf}")
+
+    destination_dir = Path(output_dir) if output_dir is not None else pdf.parent
+    destination_dir.mkdir(parents=True, exist_ok=True)
+
+    output_prefix = destination_dir / f"{pdf.stem}_{dpi}dpi"
+    existing_outputs = sorted(destination_dir.glob(f"{output_prefix.name}*.png"))
+    if existing_outputs:
+        if not overwrite:
+            raise FileExistsError(
+                f"PNG output already exists for {pdf}: {existing_outputs[0]}. "
+                "Pass overwrite=True to replace existing files."
+            )
+        for existing_output in existing_outputs:
+            existing_output.unlink()
+
+    if backend in {"auto", "pymupdf"}:
+        try:
+            return _convert_pdf_to_pngs_with_pymupdf(pdf, destination_dir, dpi)
+        except ImportError:
+            if backend == "pymupdf":
+                raise RuntimeError(
+                    "PyMuPDF is not installed. Install it with `pip install PyMuPDF` "
+                    "or use backend='pdftoppm'."
+                )
+
+    if backend in {"auto", "pdftoppm"}:
+        return _convert_pdf_to_pngs_with_pdftoppm(
+            pdf=pdf,
+            destination_dir=destination_dir,
+            dpi=dpi,
+            pdftoppm_executable=pdftoppm_executable,
+        )
+
+    raise RuntimeError("No PDF rendering backend is available.")
+
+
+def _pdf_png_output_path(pdf: Path, output_dir: Path, dpi: int, page_count: int, page_index: int) -> Path:
+    if page_count == 1:
+        return output_dir / f"{pdf.stem}_{dpi}dpi.png"
+    page_number = page_index + 1
+    return output_dir / f"{pdf.stem}_page_{page_number}_{dpi}dpi.png"
+
+
+def _convert_pdf_to_pngs_with_pymupdf(pdf: Path, output_dir: Path, dpi: int) -> list[Path]:
+    import fitz
+
+    scale = dpi / 72
+    matrix = fitz.Matrix(scale, scale)
+    rendered_outputs: list[Path] = []
+    with fitz.open(pdf) as document:
+        for page_index in range(document.page_count):
+            output_path = _pdf_png_output_path(
+                pdf=pdf,
+                output_dir=output_dir,
+                dpi=dpi,
+                page_count=document.page_count,
+                page_index=page_index,
+            )
+            page = document.load_page(page_index)
+            pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+            pixmap.save(output_path)
+            rendered_outputs.append(output_path)
+    return rendered_outputs
+
+
+def _convert_pdf_to_pngs_with_pdftoppm(
+    pdf: Path,
+    destination_dir: Path,
+    dpi: int,
+    pdftoppm_executable: str,
+) -> list[Path]:
+    output_prefix = destination_dir / f"{pdf.stem}_{dpi}dpi"
+    command = [
+        pdftoppm_executable,
+        "-r",
+        str(dpi),
+        "-png",
+        str(pdf),
+        str(output_prefix),
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "pdftoppm was not found. Install Poppler or pass pdftoppm_executable "
+            "with the full path to pdftoppm."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or exc.stdout or "").strip()
+        raise RuntimeError(f"Failed to render PDF to PNG: {pdf}. {details}") from exc
+
+    rendered_outputs = sorted(destination_dir.glob(f"{output_prefix.name}-*.png"))
+    if not rendered_outputs:
+        single_output = output_prefix.with_suffix(".png")
+        if single_output.exists():
+            return [single_output]
+        raise RuntimeError(f"pdftoppm did not create any PNG files for {pdf}.")
+
+    if len(rendered_outputs) == 1:
+        single_output = output_prefix.with_suffix(".png")
+        rendered_outputs[0].replace(single_output)
+        return [single_output]
+
+    renamed_outputs: list[Path] = []
+    for rendered_output in rendered_outputs:
+        page_match = re.search(r"-(\d+)$", rendered_output.stem)
+        page_number = page_match.group(1) if page_match else str(len(renamed_outputs) + 1)
+        renamed_output = destination_dir / f"{pdf.stem}_page_{page_number}_{dpi}dpi.png"
+        rendered_output.replace(renamed_output)
+        renamed_outputs.append(renamed_output)
+    return renamed_outputs
 
 
 def create_train_val_test_dataset(

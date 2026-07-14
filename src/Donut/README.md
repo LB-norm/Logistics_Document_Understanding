@@ -118,12 +118,21 @@ python3 src/Donut/train_finetune.py \
   --warmup-steps 50 \
   --eval-steps 25 \
   --save-steps 25 \
+  --save-total-limit 2 \
   --logging-steps 5 \
   --dataloader-num-workers 4 \
   --fp16
 ```
 
-When `--output-dir` is omitted, the trainer creates a timestamped run folder under `runs/donut/`. Each run contains checkpoints, final model weights, `training_config.json`, and `run_metadata.json` with dataset, target skeleton, model, parameter, duration, and metric details. Run folder creation and normalized Trainer metric serialization are handled by the shared utilities in `src/utils/run_utils.py`, so the same metadata format can be reused by Qwen and later evaluation pipelines.
+When `--output-dir` is omitted, the trainer creates a timestamped run folder under `runs/donut/`. Each run contains the best and last checkpoints, final model weights, `training_config.json`, `trainer_state.json`, plots under `plots/`, and `run_metadata.json` with dataset, target skeleton, model, parameter, duration, checkpoint, plot, and metric details. Run folder creation and normalized Trainer metric serialization are handled by the shared utilities in `src/utils/run_utils.py`, so the same metadata format can be reused by Qwen and later evaluation pipelines.
+
+The Donut trainer tracks the best checkpoint by lowest `eval_loss`, loads that best checkpoint before saving the root model, and prunes checkpoint folders to best plus last. Keep `--save-steps` equal to `--eval-steps`; the script will override mismatched values to make checkpoint selection exact.
+
+Generate or regenerate the training plots for an existing run:
+
+```bash
+python3 -m src.utils.training_plots runs/donut/<run-name>
+```
 
 If the 3080 Ti runs out of memory, keep `--max-length 1024` and reduce the image size first:
 

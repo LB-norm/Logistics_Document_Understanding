@@ -89,7 +89,13 @@ python src/Donut/train_finetune.py \
   --bf16
 ```
 
-When `--output-dir` is omitted, the trainer creates a timestamped run folder under `runs/donut/` containing checkpoints, final weights, `training_config.json`, and `run_metadata.json`. The run-folder and normalized metric helpers live in `src/utils/run_utils.py` so Qwen and later evaluation pipelines can use the same metadata shape. The command is a starting point for a high-memory GPU. Reduce batch size or image size for smaller GPUs. CPU training is intended only for parsing checks and smoke tests.
+When `--output-dir` is omitted, the trainer creates a timestamped run folder under `runs/donut/` containing the best and last checkpoints, final weights, `training_config.json`, `trainer_state.json`, plots, and `run_metadata.json`. The run-folder and normalized metric helpers live in `src/utils/run_utils.py` so Qwen and later evaluation pipelines can use the same metadata shape. The command is a starting point for a high-memory GPU. Reduce batch size or image size for smaller GPUs. CPU training is intended only for parsing checks and smoke tests.
+
+Training plots can be generated again from any run folder with:
+
+```bash
+python3 -m src.utils.training_plots runs/donut/<run-name>
+```
 
 Run a fine-tuned checkpoint on an image:
 

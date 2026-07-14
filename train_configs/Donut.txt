@@ -1,0 +1,20 @@
+.\.venv\Scripts\python.exe -m src.Donut.train_finetune `
+     --dataset-root data\datasets\250_CMRS_240dpi_20260707 `
+     --model-id naver-clova-ix/donut-base `
+     --local-files-only `
+     --task-start-token "<s_lieferschein>" `
+     --schema-path json_schema/content.schema.json `
+     --target-skeleton-path json_schema/content.empty.json `
+     --image-size 1280 960 `
+     --max-length 1024 `
+     --per-device-train-batch-size 1 `
+     --per-device-eval-batch-size 1 `
+     --gradient-accumulation-steps 8 `
+     --num-train-epochs 50 `
+     --learning-rate 3e-5 `
+     --warmup-steps 100 `
+     --eval-steps 50 `
+     --save-steps 50 `
+     --save-total-limit 2 `
+     --logging-steps 5 `
+    --dataloader-num-workers 0

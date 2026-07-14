@@ -10,7 +10,6 @@
       "value": null
     },
     "senderContactInformation": {
-      "email": null,
       "phone": null
     }
   },
@@ -23,18 +22,12 @@
     "consigneeCountryCode": {
       "region": null,
       "value": null
-    },
-    "consigneeContactInformation": {
-      "email": null,
-      "phone": null
     }
   },
   "takingOverTheGoods": {
     "takingOverTheGoodsPlace": null,
     "logisticsDateOfArrival": null,
-    "logisticsTimeOfArrival": null,
-    "logisticsDateOfDeparture": null,
-    "logisticsTimeOfDeparture": null
+    "logisticsDateOfDeparture": null
   },
   "deliveryOfTheGoods": {
     "logisticsLocationCity": null,
@@ -53,24 +46,17 @@
       "region": null,
       "value": null
     },
-    "carrierLicensePlate": null,
-    "carrierContactInformation": {
-      "email": null,
-      "phone": null
-    }
+    "carrierLicensePlate": null
   },
   "successiveCarrierInformation": {
     "successiveCarrierNameCompany": null,
-    "successiveCarrierNamePerson": null,
     "successiveCarrierStreet": null,
     "successiveCarrierPostcode": null,
     "successiveCarrierCity": null,
     "successiveCarrierCountryCode": {
-      "region": null,
       "value": null
     },
     "successiveCarrierContactInformation": {
-      "email": null,
       "phone": null
     }
   },
@@ -104,28 +90,20 @@
     }
   ],
   "toBePaidBy": {
-    "customChargeCarriage": null,
-    "customChargeSupplementary": null,
-    "customChargeCustomsDuties": null,
-    "customChargeOther": null
+    "customChargeCarriage": null
   },
   "signatureOrStampOfTheSender": {
     "senderSignature": {
-      "type": null,
       "userName": null,
       "userCompany": null,
       "userStreet": null,
       "userPostCode": null,
       "userCity": null,
-      "userCountry": null,
-      "data": null,
-      "time": null,
-      "date": null
+      "userCountry": null
     }
   },
   "signatureOrStampOfTheCarrier": {
     "carrierSignature": {
-      "type": null,
       "userName": null,
       "userCompany": null,
       "userStreet": null,
@@ -133,7 +111,6 @@
       "userCity": null,
       "userCountry": null,
       "data": null,
-      "time": null,
       "date": null
     }
   },
@@ -147,8 +124,7 @@
       "userCity": null,
       "userCountry": null,
       "date": null,
-      "time": null,
-      "data": null
+      "time": null
     }
   },
   "referenceIdentificationNumber": null
