@@ -1451,6 +1451,12 @@ def relative_url(target: Path, report_dir: Path) -> str:
     return quote(relative, safe="/.:_-~")
 
 
+def vscode_editor_url(target: Path) -> str:
+    """Return a platform-native VS Code URL for an absolute file path."""
+    file_url = target.resolve().as_uri()
+    return "vscode://file" + file_url.removeprefix("file://")
+
+
 def peer_summary(sample: Sample) -> dict[str, Any]:
     return {
         "id": sample.sample_id,
@@ -1486,10 +1492,7 @@ def write_html_review(
                 "split": sample.split,
                 "risk": risk_score(sample),
                 "image": relative_url(sample.image_path, output_dir),
-                "annotation_editor_url": (
-                    "vscode://file"
-                    + quote(str(sample.annotation_path.resolve()), safe="/:")
-                ),
+                "annotation_editor_url": vscode_editor_url(sample.annotation_path),
                 "annotation_path": str(sample.annotation_path.relative_to(dataset_root)),
                 "issues": [
                     {

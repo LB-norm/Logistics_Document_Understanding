@@ -14,7 +14,7 @@ The default input is `data/datasets/250_CMRS_240dpi_20260707`. To audit another 
 .\.venv\Scripts\python.exe -m src.utils.annotation_audit data\datasets\another_dataset
 ```
 
-Open `data/datasets/250_CMRS_240dpi_20260707/annotation_audit/review.html` in a browser. The self-contained workspace shows one document at a time with its image, reported issues and recommendations, closest peers, and side-by-side field comparison. **Edit JSON in VS Code** uses a `vscode://file` link to open the document's source annotation directly in VS Code. Chrome may ask once for permission to open the external application. Review state is retained in browser local storage.
+Open `data/datasets/250_CMRS_240dpi_20260707/annotation_audit/review.html` in a browser. The self-contained workspace shows one document at a time with its image, reported issues and recommendations, closest peers, and side-by-side field comparison. **Edit JSON in VS Code** uses a platform-native `vscode://file` link to open the document's source annotation directly in VS Code on Windows or Linux. Chrome may ask once for permission to open the external application. Review state is retained in browser local storage; annotations are changed only when you manually edit and save them in VS Code.
 
 At the bottom of each document, select **Reviewed** or use **Mark reviewed and continue**. The default queue contains open documents. **Export checklist CSV** exports every document with a `reviewed` or `open` status; it does not export audit decisions, notes, or proposed corrections. `report.html` is kept as a compatibility copy of the same review workspace.
 

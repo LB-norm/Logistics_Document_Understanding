@@ -18,6 +18,7 @@ from src.utils.annotation_audit import (
     risk_score,
     run_distribution_checks,
     schema_leaf_paths,
+    vscode_editor_url,
     write_outputs,
 )
 
@@ -71,6 +72,12 @@ class AnnotationAuditTests(unittest.TestCase):
     def test_get_path_returns_none_for_missing_component(self) -> None:
         self.assertEqual(get_path({"a": {"b": 3}}, "a.b"), 3)
         self.assertIsNone(get_path({"a": {}}, "a.b"))
+
+    def test_vscode_editor_url_uses_native_absolute_file_uri(self) -> None:
+        target = Path("folder with spaces") / "ground_truth.json"
+        expected = "vscode://file" + target.resolve().as_uri().removeprefix("file://")
+        self.assertEqual(vscode_editor_url(target), expected)
+        self.assertIn("folder%20with%20spaces", expected)
 
     def test_schema_leaf_paths_include_array_fields(self) -> None:
         schema = {
