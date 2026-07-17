@@ -1,6 +1,6 @@
 # Annotation audit
 
-`annotation_audit.py` creates an explainable manual-review queue for JSON labels. It never changes an annotation.
+`annotation_audit.py` creates an explainable manual-review workspace for JSON labels.
 
 Run it from the repository root:
 
@@ -14,13 +14,17 @@ The default input is `data/datasets/250_CMRS_240dpi_20260707`. To audit another 
 .\.venv\Scripts\python.exe -m src.utils.annotation_audit data\datasets\another_dataset
 ```
 
-Open `data/datasets/250_CMRS_240dpi_20260707/annotation_audit/report.html` in a browser. The report provides image/JSON links, reasons for every flag, closest annotation peers, a side-by-side field comparison, filters, and local review decisions. The **Export review decisions CSV** button saves browser decisions as a CSV. Decisions are kept in browser local storage until exported; the source annotations are not edited.
+Open `data/datasets/250_CMRS_240dpi_20260707/annotation_audit/review.html` in a browser. The self-contained workspace shows one document at a time with its image, reported issues and recommendations, closest peers, and side-by-side field comparison. **Edit JSON in VS Code** uses a `vscode://file` link to open the document's source annotation directly in VS Code. Chrome may ask once for permission to open the external application. Review state is retained in browser local storage.
+
+At the bottom of each document, select **Reviewed** or use **Mark reviewed and continue**. The default queue contains open documents. **Export checklist CSV** exports every document with a `reviewed` or `open` status; it does not export audit decisions, notes, or proposed corrections. `report.html` is kept as a compatibility copy of the same review workspace.
 
 The output directory also contains:
 
 - `review_queue.csv`: document-level queue, sorted by risk, with issue types, affected JSON fields, and blank correction columns for spreadsheet review.
+- `review.html`: primary browser review workspace. `report.html` contains the same page for compatibility with existing links.
 - `issues.csv`: one row per detector finding.
-- `field_statistics.csv`: coverage, type, frequency, length, and numeric summaries for every field.
+- `field_statistics.csv`: one row for every target-schema leaf field, including fields with zero observations. It reports non-null example coverage, typed value counts, rarity/typo/format finding counts, length summaries, and numeric summaries.
+- `field_values.csv`: complete typed value inventory. Every distinct non-null JSON value has its occurrence and example counts, frequencies, rarity class, example IDs, and likely typo suggestion. Unlike `top_values` in `field_statistics.csv`, this file is not truncated.
 - `learned_rules.csv`: repeated entity/address relationships learned from the dataset and their exceptions.
 - `summary.json`: machine-readable run summary.
 
@@ -34,8 +38,12 @@ The audit deliberately combines several weak, explainable signals instead of dec
 - Consistency exceptions learned from repeated companies and postcodes. A rule is only learned when an anchor occurs at least three times and one dependent value accounts for at least 80% of those occurrences.
 - Byte-identical images carrying different annotations.
 - Robust numeric outliers.
+- Rare values in otherwise repetitive fields. All singletons remain visible in `field_values.csv`, but they enter the review queue only when the field has at least 20 values, no more than 20% distinct values, and the candidate accounts for no more than 2% of occurrences.
+- Minority JSON types and character classes learned independently for each field. A finding requires at least ten values and a dominant profile covering at least 90% of occurrences.
+- Inconsistent text variants which differ from a frequent form only through case, accents, spacing, or punctuation.
+- Likely typos found by comparing rare text with much more frequent values in the same field. Suggestions require strong normalized edit similarity and preserve numeric components, so different street numbers are not proposed as corrections.
 
-A high score means “review early,” not “automatically incorrect.” Edit `review_queue.csv` or export decisions from the report, inspect the image, and then change the original JSON manually. Tune learned-rule sensitivity with `--min-rule-support` and `--rule-confidence`; raising either option reduces flags.
+A high score means “review early,” not “automatically incorrect.” Inspect the image and peers, open and edit the source JSON in VS Code when needed, and mark the document reviewed. Tune learned-rule sensitivity with `--min-rule-support` and `--rule-confidence`; raising either option reduces flags.
 
 For all command-line options:
 
