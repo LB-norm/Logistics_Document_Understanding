@@ -62,13 +62,13 @@ For flat folders, a single example is reused for validation so the Trainer can r
 Validate dataset parsing without loading the model:
 
 ```bash
-python3 src/Donut/train_finetune.py --dry-run
+python3 src/Donut/run_donut_training.py --dry-run
 ```
 
 Quick one-example dry run:
 
 ```bash
-python3 src/Donut/train_finetune.py \
+python3 src/Donut/run_donut_training.py \
   --dataset-root "data/small testing" \
   --dry-run
 ```
@@ -78,7 +78,7 @@ python3 src/Donut/train_finetune.py \
 Small local smoke train from the copied one-example folder:
 
 ```bash
-python3 src/Donut/train_finetune.py \
+python3 src/Donut/run_donut_training.py \
   --dataset-root "data/small testing" \
   --model-id models/donut-lieferschein-smoketest-cpucheck \
   --local-files-only \
@@ -91,38 +91,53 @@ python3 src/Donut/train_finetune.py \
   --dataloader-num-workers 0 \
   --max-length 1024 \
   --image-size 640 480 \
+  --validation-preview-samples 0 \
   --no-gradient-checkpointing
 ```
 
-Recommended full dataset training on an NVIDIA RTX 3080 Ti:
+The normal training configuration is stored in `DEFAULT_TRAINING_CONFIG` inside
+`run_donut_training.py`. Start it without repeating the complete configuration:
 
 ```bash
 source .venv/bin/activate
 
-python3 src/Donut/train_finetune.py --dry-run
+python3 src/Donut/run_donut_training.py --dry-run
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-python3 src/Donut/train_finetune.py \
-  --dataset-root data/datasets/250_CMRS_240dpi_20260707 \
-  --model-id naver-clova-ix/donut-base \
-  --task-start-token "<s_lieferschein>" \
-  --schema-path json_schema/content.schema.json \
-  --target-skeleton-path json_schema/content.empty.json \
-  --image-size 1280 960 \
-  --max-length 1024 \
-  --per-device-train-batch-size 1 \
-  --per-device-eval-batch-size 1 \
-  --gradient-accumulation-steps 8 \
-  --num-train-epochs 10 \
-  --learning-rate 3e-5 \
-  --warmup-steps 50 \
-  --eval-steps 25 \
-  --save-steps 25 \
-  --save-total-limit 2 \
-  --logging-steps 5 \
-  --dataloader-num-workers 4 \
-  --fp16
+python3 src/Donut/run_donut_training.py --fp16
 ```
+
+Any supplied option overrides just that configured default. For example, use
+`python3 src/Donut/run_donut_training.py --image-size 1920 1280` for a
+higher-resolution experiment. Argument parsing and all training behavior remain in
+`donut_train_logic.py`; the launcher only defines defaults and invokes that logic.
+
+`--validation-preview-samples 2` selects two validation examples once, then runs
+autoregressive inference on those same examples after every training log (controlled by
+`--logging-steps`). Reports are written to
+`runs/donut/<run-name>/validation_previews/` as JSON and as a side-by-side HTML comparison.
+Open `validation_previews/latest.html` while training to see the newest ground truth,
+prediction, parsing status, and field-level differences. The launcher config enables two
+samples by default. Set the option to `0` to disable previews, or use
+`--validation-preview-max-length` to make preview generation
+shorter than the training `--max-length` when iteration speed matters.
+
+Before comparing a generated prediction with its ground truth, the preview uses the target
+JSON Schema to resolve two ambiguities in Donut's `token2json()` output: the string `"null"`
+is converted to JSON `null` only for nullable fields, and an object generated for a
+schema-declared array is treated as a one-item array. The unnormalized parser output remains
+available as `raw_prediction` in each preview JSON report.
+
+Training targets are serialized recursively in the explicit field order declared by
+`--target-skeleton-path`. For the default CMR skeleton this begins with sender, consignee,
+taking-over, and delivery information instead of alphabetical `carrierInformation`. Nested
+objects and item rows also follow their skeleton order. Unexpected fields are appended
+alphabetically, keeping serialization deterministic while preserving them for schema audits.
+
+Validation loss and validation previews measure different behavior: loss is computed with
+teacher forcing at `--eval-steps`, while previews use autoregressive `model.generate()` at
+`--logging-steps`. Preview generation therefore adds runtime in proportion to the number of
+samples and maximum generation length.
 
 When `--output-dir` is omitted, the trainer creates a timestamped run folder under `runs/donut/`. Each run contains the best and last checkpoints, final model weights, `training_config.json`, `trainer_state.json`, plots under `plots/`, and `run_metadata.json` with dataset, target skeleton, model, parameter, duration, checkpoint, plot, and metric details. Run folder creation and normalized Trainer metric serialization are handled by the shared utilities in `src/utils/run_utils.py`, so the same metadata format can be reused by Qwen and later evaluation pipelines.
 
@@ -150,7 +165,7 @@ Resume an interrupted run from a saved checkpoint:
 
 ```bash
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-python3 src/Donut/train_finetune.py \
+python3 src/Donut/run_donut_training.py \
   --output-dir runs/donut/<run-name> \
   --resume-from-checkpoint runs/donut/<run-name>/checkpoint-<step> \
   --fp16
@@ -178,7 +193,7 @@ The trainer adds field names from the schema, empty skeleton, and dataset annota
 After training, run inference with the fine-tuned checkpoint:
 
 ```bash
-python3 src/Donut/run_inference.py \
+python3 src/Donut/run_donut_inference.py \
   --model-id runs/donut/<run-name> \
   --task-prompt "<s_lieferschein>" \
   --image-path data/datasets/250_CMRS_240dpi_20260707/val/images/images/<image-file>.png \

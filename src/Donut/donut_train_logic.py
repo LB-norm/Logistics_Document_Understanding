@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import random
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 
@@ -33,7 +36,10 @@ DEFAULT_ANNOTATION_TARGET_KEY = "content"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(
+    argv: Sequence[str] | None = None,
+    defaults: Mapping[str, Any] | None = None,
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Fine-tune Donut for document information extraction. The trainer accepts "
@@ -145,20 +151,43 @@ def parse_args() -> argparse.Namespace:
         default=4,
         help="Number of gradient accumulation steps.",
     )
-    parser.add_argument(
+    checkpointing_group = parser.add_mutually_exclusive_group()
+    checkpointing_group.add_argument(
         "--gradient-checkpointing",
+        dest="gradient_checkpointing",
         action="store_true",
         help="Enable gradient checkpointing to reduce activation memory.",
     )
-    parser.add_argument(
+    checkpointing_group.add_argument(
         "--no-gradient-checkpointing",
-        action="store_true",
+        dest="gradient_checkpointing",
+        action="store_false",
         help="Disable gradient checkpointing.",
     )
+    parser.set_defaults(gradient_checkpointing=None)
     parser.add_argument("--dataloader-num-workers", type=int, default=4, help="PyTorch dataloader workers.")
     parser.add_argument("--eval-steps", type=int, default=250, help="Evaluation interval in optimizer steps.")
     parser.add_argument("--save-steps", type=int, default=250, help="Checkpoint save interval.")
     parser.add_argument("--logging-steps", type=int, default=25, help="Logging interval.")
+    parser.add_argument(
+        "--validation-preview-samples",
+        type=int,
+        default=0,
+        help=(
+            "Generate side-by-side predictions for this many fixed validation examples at each "
+            "training logging step. Disabled by default because autoregressive generation adds "
+            "extra training time."
+        ),
+    )
+    parser.add_argument(
+        "--validation-preview-max-length",
+        type=int,
+        default=None,
+        help=(
+            "Maximum generation length for validation previews. Defaults to --max-length and "
+            "cannot exceed it."
+        ),
+    )
     parser.add_argument(
         "--save-total-limit",
         type=int,
@@ -176,11 +205,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use fp16 mixed precision if bf16 is not available.",
     )
-    parser.add_argument(
+    local_files_group = parser.add_mutually_exclusive_group()
+    local_files_group.add_argument(
         "--local-files-only",
+        dest="local_files_only",
         action="store_true",
         help="Load Hugging Face model files only from the local cache.",
     )
+    local_files_group.add_argument(
+        "--no-local-files-only",
+        dest="local_files_only",
+        action="store_false",
+        help="Allow Hugging Face model files to be downloaded when they are not cached locally.",
+    )
+    parser.set_defaults(local_files_only=False)
     parser.add_argument(
         "--cache-dir",
         type=Path,
@@ -220,7 +258,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Parse the dataset and schema, print a summary, then exit before loading model dependencies.",
     )
-    return parser.parse_args()
+    if defaults:
+        known_destinations = {action.dest for action in parser._actions}
+        unknown_defaults = sorted(set(defaults) - known_destinations)
+        if unknown_defaults:
+            raise ValueError(
+                "Unknown Donut training default(s): " + ", ".join(unknown_defaults)
+            )
+        parser.set_defaults(**defaults)
+
+    return parser.parse_args(argv)
 
 
 def apply_checkpoint_policy(args: argparse.Namespace) -> None:
@@ -240,7 +287,7 @@ def apply_checkpoint_policy(args: argparse.Namespace) -> None:
         args.save_total_limit = 2
 
 
-def load_runtime_dependencies() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
+def load_runtime_dependencies() -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
     missing: list[str] = []
 
     try:
@@ -260,6 +307,7 @@ def load_runtime_dependencies() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
             DonutProcessor,
             Seq2SeqTrainer,
             Seq2SeqTrainingArguments,
+            TrainerCallback,
             VisionEncoderDecoderModel,
         )
     except ImportError:
@@ -267,6 +315,7 @@ def load_runtime_dependencies() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
         DonutProcessor = None
         Seq2SeqTrainer = None
         Seq2SeqTrainingArguments = None
+        TrainerCallback = None
         VisionEncoderDecoderModel = None
 
     try:
@@ -283,7 +332,16 @@ def load_runtime_dependencies() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
             "`pip install torch torchvision transformers datasets pillow sentencepiece accelerate evaluate`."
         )
 
-    return torch, Image, DonutProcessor, VisionEncoderDecoderModel, Seq2SeqTrainingArguments, Seq2SeqTrainer, Dataset
+    return (
+        torch,
+        Image,
+        DonutProcessor,
+        VisionEncoderDecoderModel,
+        Seq2SeqTrainingArguments,
+        Seq2SeqTrainer,
+        TrainerCallback,
+        Dataset,
+    )
 
 
 def set_seed(seed: int) -> None:
@@ -381,7 +439,6 @@ def build_project_example_record(
         "image_path": str(image_path),
         "annotation_path": str(annotation_path),
         "gt_parse": gt_parse,
-        "target_sequence": json_to_donut_tokens(gt_parse),
     }
 
 
@@ -411,7 +468,6 @@ def build_donut_example_record(raw_record: dict[str, Any], split_dir: Path) -> d
         "image_path": str(image_path),
         "annotation_path": None,
         "gt_parse": gt_parse,
-        "target_sequence": json_to_donut_tokens(gt_parse),
     }
 
 
@@ -485,7 +541,6 @@ def load_flat_examples(dataset_root: Path, annotation_target_key: str) -> list[d
                 "image_path": str(image_path),
                 "annotation_path": str(annotation_path),
                 "gt_parse": gt_parse,
-                "target_sequence": json_to_donut_tokens(gt_parse),
             }
         )
 
@@ -706,18 +761,29 @@ def collect_field_tokens_from_gt_parse(gt_parse: Any) -> set[str]:
     return tokens
 
 
-def json_to_donut_tokens(obj: Any, sort_keys: bool = True) -> str:
+def ordered_json_keys(obj: dict[str, Any], order_template: Any) -> list[str]:
+    """Order known keys by the explicit template and unknown keys deterministically."""
+    template_keys = list(order_template) if isinstance(order_template, dict) else []
+    template_key_set = set(template_keys)
+    known_keys = [key for key in template_keys if key in obj]
+    unknown_keys = sorted(key for key in obj if key not in template_key_set)
+    return known_keys + unknown_keys
+
+
+def json_to_donut_tokens(obj: Any, order_template: Any) -> str:
+    """Serialize JSON using the recursive field order declared by a target template."""
     if isinstance(obj, dict):
-        keys = sorted(obj.keys()) if sort_keys else list(obj.keys())
         output = ""
-        for key in keys:
+        for key in ordered_json_keys(obj, order_template):
+            child_template = order_template.get(key) if isinstance(order_template, dict) else None
             output += f"<s_{key}>"
-            output += json_to_donut_tokens(obj[key], sort_keys=sort_keys)
+            output += json_to_donut_tokens(obj[key], child_template)
             output += f"</s_{key}>"
         return output
 
     if isinstance(obj, list):
-        return "<sep/>".join(json_to_donut_tokens(item, sort_keys=sort_keys) for item in obj)
+        item_template = order_template[0] if isinstance(order_template, list) and order_template else None
+        return "<sep/>".join(json_to_donut_tokens(item, item_template) for item in obj)
 
     if obj is None:
         return "<null/>"
@@ -726,6 +792,396 @@ def json_to_donut_tokens(obj: Any, sort_keys: bool = True) -> str:
         return "true" if obj else "false"
 
     return str(obj)
+
+
+def add_target_sequences(
+    examples: list[dict[str, Any]], target_skeleton: Any
+) -> list[dict[str, Any]]:
+    """Attach canonical, target-skeleton-ordered Donut sequences to dataset examples."""
+    return [
+        {
+            **example,
+            "target_sequence": json_to_donut_tokens(example["gt_parse"], target_skeleton),
+        }
+        for example in examples
+    ]
+
+
+def select_validation_preview_examples(
+    examples: list[dict[str, Any]], sample_count: int, seed: int
+) -> list[dict[str, Any]]:
+    """Choose a fixed, reproducible validation subset for the whole run."""
+    if sample_count <= 0:
+        return []
+    if sample_count >= len(examples):
+        return list(examples)
+
+    indices = list(range(len(examples)))
+    random.Random(seed).shuffle(indices)
+    return [examples[index] for index in sorted(indices[:sample_count])]
+
+
+def json_differences(expected: Any, predicted: Any, path: str = "$") -> list[dict[str, Any]]:
+    """Return compact, path-oriented differences between two JSON-compatible values."""
+    if type(expected) is not type(predicted):
+        return [
+            {
+                "kind": "type_mismatch",
+                "path": path,
+                "ground_truth": expected,
+                "prediction": predicted,
+            }
+        ]
+
+    if isinstance(expected, dict):
+        differences: list[dict[str, Any]] = []
+        for key in expected.keys() - predicted.keys():
+            differences.append(
+                {
+                    "kind": "missing_in_prediction",
+                    "path": f"{path}.{key}",
+                    "ground_truth": expected[key],
+                }
+            )
+        for key in predicted.keys() - expected.keys():
+            differences.append(
+                {
+                    "kind": "unexpected_in_prediction",
+                    "path": f"{path}.{key}",
+                    "prediction": predicted[key],
+                }
+            )
+        for key in expected.keys() & predicted.keys():
+            differences.extend(json_differences(expected[key], predicted[key], f"{path}.{key}"))
+        return sorted(differences, key=lambda item: (item["path"], item["kind"]))
+
+    if isinstance(expected, list):
+        differences = []
+        common_length = min(len(expected), len(predicted))
+        for index in range(common_length):
+            differences.extend(
+                json_differences(expected[index], predicted[index], f"{path}[{index}]")
+            )
+        for index in range(common_length, len(expected)):
+            differences.append(
+                {
+                    "kind": "missing_in_prediction",
+                    "path": f"{path}[{index}]",
+                    "ground_truth": expected[index],
+                }
+            )
+        for index in range(common_length, len(predicted)):
+            differences.append(
+                {
+                    "kind": "unexpected_in_prediction",
+                    "path": f"{path}[{index}]",
+                    "prediction": predicted[index],
+                }
+            )
+        return differences
+
+    if expected != predicted:
+        return [
+            {
+                "kind": "value_mismatch",
+                "path": path,
+                "ground_truth": expected,
+                "prediction": predicted,
+            }
+        ]
+    return []
+
+
+def clean_generated_sequence(sequence: str, processor: Any) -> str:
+    cleaned = sequence
+    if processor.tokenizer.eos_token:
+        cleaned = cleaned.replace(processor.tokenizer.eos_token, "")
+    if processor.tokenizer.pad_token:
+        cleaned = cleaned.replace(processor.tokenizer.pad_token, "")
+    return re.sub(r"<.*?>", "", cleaned, count=1).strip()
+
+
+def parse_generated_sequence(sequence: str, processor: Any) -> tuple[Any, str | None]:
+    if not hasattr(processor, "token2json"):
+        return {"text_sequence": sequence}, "Processor does not provide token2json()."
+    try:
+        return processor.token2json(sequence), None
+    except Exception as exc:
+        return {"text_sequence": sequence}, f"{type(exc).__name__}: {exc}"
+
+
+def schema_types(schema_node: Any, root_schema: Any) -> set[str]:
+    """Return the JSON types declared by a schema node after resolving local refs."""
+    resolved = resolve_schema_ref(root_schema, schema_node)
+    if not isinstance(resolved, dict):
+        return set()
+
+    declared = resolved.get("type")
+    if isinstance(declared, str):
+        return {declared}
+    if isinstance(declared, list):
+        return {value for value in declared if isinstance(value, str)}
+    return set()
+
+
+def normalize_prediction_to_schema(
+    prediction: Any,
+    schema_node: Any,
+    root_schema: Any | None = None,
+) -> Any:
+    """Repair Donut parser ambiguities that can be resolved from the JSON schema.
+
+    Donut's ``token2json`` represents ``<null/>`` as the string ``"null"``. It
+    also represents a one-item list as its sole item because the serialized form
+    contains no ``<sep/>`` token. Only these unambiguous, schema-supported cases
+    are normalized; missing fields and other malformed values remain visible.
+    """
+    root = root_schema if root_schema is not None else schema_node
+    resolved = resolve_schema_ref(root, schema_node)
+    if not isinstance(resolved, dict):
+        return prediction
+
+    declared_types = schema_types(resolved, root)
+    if prediction == "null" and "null" in declared_types:
+        return None
+
+    if "array" in declared_types:
+        item_schema = resolved.get("items", {})
+        if isinstance(prediction, list):
+            return [
+                normalize_prediction_to_schema(item, item_schema, root)
+                for item in prediction
+            ]
+        if isinstance(prediction, dict):
+            return [normalize_prediction_to_schema(prediction, item_schema, root)]
+        return prediction
+
+    if isinstance(prediction, dict) and (
+        "object" in declared_types or isinstance(resolved.get("properties"), dict)
+    ):
+        properties = resolved.get("properties", {})
+        return {
+            key: normalize_prediction_to_schema(value, properties[key], root)
+            if key in properties
+            else value
+            for key, value in prediction.items()
+        }
+
+    return prediction
+
+
+def generate_validation_preview_sample(
+    *,
+    torch: Any,
+    image_module: Any,
+    processor: Any,
+    model: Any,
+    example: dict[str, Any],
+    task_start_token: str,
+    max_length: int,
+    target_schema: Any,
+    root_schema: Any,
+) -> dict[str, Any]:
+    with image_module.open(example["image_path"]) as image:
+        rgb_image = image.convert("RGB")
+    device = next(model.parameters()).device
+    pixel_values = processor(images=rgb_image, return_tensors="pt").pixel_values.to(device)
+    decoder_input_ids = processor.tokenizer(
+        task_start_token,
+        add_special_tokens=False,
+        return_tensors="pt",
+    ).input_ids.to(device)
+    generation_kwargs: dict[str, Any] = {
+        "max_length": max_length,
+        "num_beams": 1,
+        "pad_token_id": processor.tokenizer.pad_token_id,
+        "eos_token_id": processor.tokenizer.eos_token_id,
+        "use_cache": True,
+        "return_dict_in_generate": True,
+    }
+    if processor.tokenizer.unk_token_id is not None:
+        generation_kwargs["bad_words_ids"] = [[processor.tokenizer.unk_token_id]]
+
+    outputs = model.generate(
+        pixel_values,
+        decoder_input_ids=decoder_input_ids,
+        **generation_kwargs,
+    )
+    raw_sequence = processor.batch_decode(outputs.sequences)[0]
+    cleaned_sequence = clean_generated_sequence(raw_sequence, processor)
+    raw_prediction, parse_error = parse_generated_sequence(cleaned_sequence, processor)
+    prediction = normalize_prediction_to_schema(raw_prediction, target_schema, root_schema)
+    differences = json_differences(example["gt_parse"], prediction)
+    return {
+        "id": example["id"],
+        "image_path": example["image_path"],
+        "annotation_path": example.get("annotation_path"),
+        "ground_truth": example["gt_parse"],
+        "raw_prediction": raw_prediction,
+        "prediction": prediction,
+        "exact_match": not differences,
+        "differences": differences,
+        "parse_error": parse_error,
+        "raw_sequence": raw_sequence,
+        "cleaned_sequence": cleaned_sequence,
+    }
+
+
+def render_validation_preview_html(payload: dict[str, Any]) -> str:
+    def pretty(value: Any) -> str:
+        return html.escape(json.dumps(value, ensure_ascii=False, indent=2))
+
+    sample_sections: list[str] = []
+    for sample in payload.get("samples", []):
+        image_uri = Path(sample["image_path"]).resolve().as_uri()
+        exact_match = "yes" if sample["exact_match"] else "no"
+        parse_error = sample.get("parse_error") or "none"
+        sample_sections.append(
+            f"""
+            <section class="sample">
+              <h2>{html.escape(str(sample['id']))}</h2>
+              <p><a href="{html.escape(image_uri, quote=True)}">Open source image</a>
+                 &middot; exact match: <strong>{exact_match}</strong>
+                 &middot; differences: {len(sample['differences'])}
+                 &middot; parse error: {html.escape(parse_error)}</p>
+              <div class="comparison">
+                <div><h3>Ground truth</h3><pre>{pretty(sample['ground_truth'])}</pre></div>
+                <div><h3>Prediction</h3><pre>{pretty(sample['prediction'])}</pre></div>
+              </div>
+              <details><summary>Structured differences</summary><pre>{pretty(sample['differences'])}</pre></details>
+              <details><summary>Raw generated sequence</summary><pre>{html.escape(sample['raw_sequence'])}</pre></details>
+            </section>
+            """
+        )
+
+    error_section = ""
+    if payload.get("error"):
+        error_section = f"<p class=\"error\">{html.escape(str(payload['error']))}</p>"
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Donut validation preview - step {payload['global_step']}</title>
+  <style>
+    body {{ margin: 2rem; color: #202124; font-family: system-ui, sans-serif; }}
+    .comparison {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }}
+    .sample {{ border-top: 2px solid #dadce0; margin-top: 2rem; padding-top: 1rem; }}
+    pre {{ background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; overflow: auto; padding: 1rem; white-space: pre-wrap; }}
+    .error {{ color: #b00020; font-weight: 600; }}
+    @media (max-width: 900px) {{ .comparison {{ grid-template-columns: 1fr; }} }}
+  </style>
+</head>
+<body>
+  <h1>Donut validation preview</h1>
+  <p>Step {payload['global_step']} &middot; epoch {payload.get('epoch')} &middot; status {html.escape(payload['status'])}</p>
+  {error_section}
+  {''.join(sample_sections)}
+</body>
+</html>
+"""
+
+
+def write_validation_preview(output_dir: Path, payload: dict[str, Any]) -> dict[str, str]:
+    preview_dir = output_dir / "validation_previews"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"step_{int(payload['global_step']):08d}"
+    json_path = preview_dir / f"{stem}.json"
+    html_path = preview_dir / f"{stem}.html"
+    latest_json_path = preview_dir / "latest.json"
+    latest_html_path = preview_dir / "latest.html"
+    rendered_html = render_validation_preview_html(payload)
+
+    write_json(json_path, payload)
+    write_json(latest_json_path, payload)
+    html_path.write_text(rendered_html, encoding="utf-8")
+    latest_html_path.write_text(rendered_html, encoding="utf-8")
+    return {
+        "json": str(json_path),
+        "html": str(html_path),
+        "latest_json": str(latest_json_path),
+        "latest_html": str(latest_html_path),
+    }
+
+
+def build_validation_preview_callback(
+    *,
+    TrainerCallback: Any,
+    torch: Any,
+    image_module: Any,
+    processor: Any,
+    examples: list[dict[str, Any]],
+    output_dir: Path,
+    task_start_token: str,
+    max_length: int,
+    target_schema: Any,
+    root_schema: Any,
+) -> Any:
+    class ValidationPreviewCallback(TrainerCallback):
+        def __init__(self) -> None:
+            self.last_preview_step = -1
+
+        def on_log(self, args: Any, state: Any, control: Any, logs: Any = None, **kwargs: Any) -> Any:
+            current_logs = logs or {}
+            global_step = int(state.global_step)
+            if (
+                not examples
+                or "loss" not in current_logs
+                or global_step <= 0
+                or global_step == self.last_preview_step
+                or not getattr(state, "is_world_process_zero", True)
+            ):
+                return control
+
+            self.last_preview_step = global_step
+            model = kwargs["model"]
+            was_training = model.training
+            payload: dict[str, Any] = {
+                "status": "completed",
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                "global_step": global_step,
+                "epoch": float(state.epoch) if state.epoch is not None else None,
+                "training_log": current_logs,
+                "task_start_token": task_start_token,
+                "max_length": max_length,
+                "samples": [],
+            }
+            try:
+                model.eval()
+                with torch.inference_mode():
+                    payload["samples"] = [
+                        generate_validation_preview_sample(
+                            torch=torch,
+                            image_module=image_module,
+                            processor=processor,
+                            model=model,
+                            example=example,
+                            task_start_token=task_start_token,
+                            max_length=max_length,
+                            target_schema=target_schema,
+                            root_schema=root_schema,
+                        )
+                        for example in examples
+                    ]
+                payload["exact_matches"] = sum(
+                    sample["exact_match"] for sample in payload["samples"]
+                )
+            except Exception as exc:
+                payload["status"] = "failed"
+                payload["error"] = f"{type(exc).__name__}: {exc}"
+                print(
+                    f"Validation preview failed at step {global_step}: {payload['error']}",
+                    file=sys.stderr,
+                )
+            finally:
+                if was_training:
+                    model.train()
+
+            paths = write_validation_preview(output_dir, payload)
+            print(f"Saved validation preview for step {global_step} to {paths['html']}")
+            return control
+
+    return ValidationPreviewCallback()
 
 
 @dataclass
@@ -1041,10 +1497,28 @@ def save_trainer_state(trainer: Any, output_dir: Path) -> dict[str, Any] | None:
     return state_dict
 
 
-def main() -> int:
-    args = parse_args()
+def main(
+    argv: Sequence[str] | None = None,
+    defaults: Mapping[str, Any] | None = None,
+) -> int:
+    args = parse_args(argv=argv, defaults=defaults)
     apply_checkpoint_policy(args)
     set_seed(args.seed)
+
+    if args.validation_preview_samples < 0:
+        raise ValueError("--validation-preview-samples must be greater than or equal to 0.")
+    validation_preview_max_length = (
+        args.max_length
+        if args.validation_preview_max_length is None
+        else args.validation_preview_max_length
+    )
+    if validation_preview_max_length <= 0:
+        raise ValueError("--validation-preview-max-length must be greater than 0.")
+    if validation_preview_max_length > args.max_length:
+        raise ValueError(
+            "--validation-preview-max-length cannot exceed --max-length because decoder position "
+            "embeddings are sized from --max-length."
+        )
 
     dataset_root = resolve_dataset_root(args)
     run = RunContext.create(
@@ -1056,13 +1530,20 @@ def main() -> int:
         model_id=args.model_id,
     )
     output_dir = run.output_dir
+    schema = load_json(args.schema_path)
+    target_schema = select_schema_node_for_target(schema, args.annotation_target_key)
+    target_skeleton = load_json(args.target_skeleton_path)
     train_examples, validation_examples, train_split, validation_split, source_layout = load_dataset_splits(
         dataset_root,
         args,
     )
-    schema = load_json(args.schema_path)
-    target_schema = select_schema_node_for_target(schema, args.annotation_target_key)
-    target_skeleton = load_json(args.target_skeleton_path)
+    train_examples = add_target_sequences(train_examples, target_skeleton)
+    validation_examples = add_target_sequences(validation_examples, target_skeleton)
+    validation_preview_examples = select_validation_preview_examples(
+        validation_examples,
+        sample_count=args.validation_preview_samples,
+        seed=args.seed,
+    )
     target_shape_summary = summarize_target_shape(train_examples + validation_examples, target_skeleton)
 
     schema_tokens = collect_schema_tokens(target_schema, schema)
@@ -1086,6 +1567,16 @@ def main() -> int:
             data_tokens=data_tokens,
             target_shape_summary=target_shape_summary,
         )
+        print("  target_serialization: target_skeleton_order")
+        if isinstance(target_skeleton, dict):
+            print("  target_field_order: " + ", ".join(target_skeleton))
+        print(f"  validation_preview_samples: {len(validation_preview_examples)}")
+        if validation_preview_examples:
+            print(
+                "  validation_preview_sample_ids: "
+                + ", ".join(str(example["id"]) for example in validation_preview_examples)
+            )
+            print(f"  validation_preview_max_length: {validation_preview_max_length}")
         return 0
 
     (
@@ -1095,6 +1586,7 @@ def main() -> int:
         VisionEncoderDecoderModel,
         Seq2SeqTrainingArguments,
         Seq2SeqTrainer,
+        TrainerCallback,
         Dataset,
     ) = load_runtime_dependencies()
 
@@ -1142,14 +1634,9 @@ def main() -> int:
     model.generation_config.length_penalty = 1.0
     model.generation_config.num_beams = 1
 
-    if args.gradient_checkpointing and args.no_gradient_checkpointing:
-        raise ValueError("Use either --gradient-checkpointing or --no-gradient-checkpointing, not both.")
-
-    gradient_checkpointing = True
-    if args.no_gradient_checkpointing:
-        gradient_checkpointing = False
-    elif args.gradient_checkpointing:
-        gradient_checkpointing = True
+    gradient_checkpointing = (
+        True if args.gradient_checkpointing is None else args.gradient_checkpointing
+    )
 
     if gradient_checkpointing:
         model.gradient_checkpointing_enable()
@@ -1169,6 +1656,13 @@ def main() -> int:
             "annotation_target_key": args.annotation_target_key,
             "schema_path": str(args.schema_path),
             "target_skeleton_path": str(args.target_skeleton_path),
+            "serialization": {
+                "strategy": "target_skeleton_order",
+                "top_level_field_order": (
+                    list(target_skeleton) if isinstance(target_skeleton, dict) else []
+                ),
+                "unknown_fields": "alphabetical_after_template_fields",
+            },
             "shape_summary": target_shape_summary,
             "schema_special_tokens": len(schema_tokens),
             "skeleton_special_tokens": len(skeleton_tokens),
@@ -1189,6 +1683,14 @@ def main() -> int:
             "target_token_lengths": target_token_length_summary,
         },
         "training_parameters": namespace_to_dict(args),
+        "validation_previews": {
+            "enabled": bool(validation_preview_examples),
+            "sample_count": len(validation_preview_examples),
+            "sample_ids": [example["id"] for example in validation_preview_examples],
+            "interval": "training_logging_steps",
+            "max_length": validation_preview_max_length,
+            "output_directory": str(output_dir / "validation_previews"),
+        },
         "checkpoint_policy": {
             "retained": "best_and_last",
             "metric": "eval_loss",
@@ -1208,6 +1710,22 @@ def main() -> int:
         image_module=image_module,
         max_length=args.max_length,
     )
+    callbacks = []
+    if validation_preview_examples:
+        callbacks.append(
+            build_validation_preview_callback(
+                TrainerCallback=TrainerCallback,
+                torch=torch,
+                image_module=image_module,
+                processor=processor,
+                examples=validation_preview_examples,
+                output_dir=output_dir,
+                task_start_token=args.task_start_token,
+                max_length=validation_preview_max_length,
+                target_schema=target_schema,
+                root_schema=schema,
+            )
+        )
 
     bf16, fp16 = choose_precision_flags(args)
     training_args = build_training_arguments(
@@ -1227,6 +1745,7 @@ def main() -> int:
         train_dataset=train_dataset,
         eval_dataset=validation_dataset,
         data_collator=data_collator,
+        callbacks=callbacks,
     )
 
     train_output = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
@@ -1284,6 +1803,11 @@ def main() -> int:
             "gradient_checkpointing": gradient_checkpointing,
             "bf16": bf16,
             "fp16": fp16,
+            "validation_preview_samples": len(validation_preview_examples),
+            "validation_preview_sample_ids": [
+                example["id"] for example in validation_preview_examples
+            ],
+            "validation_preview_max_length": validation_preview_max_length,
             "train_examples": len(train_examples),
             "validation_examples": len(validation_examples),
         },
@@ -1292,7 +1816,7 @@ def main() -> int:
     print(f"Saved fine-tuned Donut model to {output_dir}")
     inference_example = validation_examples[0]
     inference_command = (
-        "python3 src/Donut/run_inference.py "
+        "python3 src/Donut/run_donut_inference.py "
         f"--model-id {output_dir} "
         f"--task-prompt {args.task_start_token!r} "
         f"--image-path {inference_example['image_path']!r} "

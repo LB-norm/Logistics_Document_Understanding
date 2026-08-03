@@ -67,27 +67,18 @@ By default, the scripts use `annotation["content"]` as the supervised target and
 First validate that the dataset can be read. This does not load a model:
 
 ```bash
-python src/Donut/train_finetune.py --dry-run
+python src/Donut/run_donut_training.py --dry-run
 ```
 
-Fine-tune Donut on the dataset:
+Fine-tune Donut using the project defaults defined in
+`src/Donut/run_donut_training.py`:
 
 ```bash
-python src/Donut/train_finetune.py \
-  --dataset-root data/datasets/250_CMRS_240dpi_20260707 \
-  --model-id naver-clova-ix/donut-base \
-  --task-start-token "<s_lieferschein>" \
-  --schema-path json_schema/content.schema.json \
-  --target-skeleton-path json_schema/content.empty.json \
-  --image-size 1280 960 \
-  --max-length 1024 \
-  --per-device-train-batch-size 2 \
-  --per-device-eval-batch-size 2 \
-  --gradient-accumulation-steps 4 \
-  --num-train-epochs 10 \
-  --learning-rate 3e-5 \
-  --bf16
+python src/Donut/run_donut_training.py
 ```
+
+Command-line arguments override individual defaults, for example
+`python src/Donut/run_donut_training.py --image-size 1920 1280`.
 
 When `--output-dir` is omitted, the trainer creates a timestamped run folder under `runs/donut/` containing the best and last checkpoints, final weights, `training_config.json`, `trainer_state.json`, plots, and `run_metadata.json`. The run-folder and normalized metric helpers live in `src/utils/run_utils.py` so Qwen and later evaluation pipelines can use the same metadata shape. The command is a starting point for a high-memory GPU. Reduce batch size or image size for smaller GPUs. CPU training is intended only for parsing checks and smoke tests.
 
@@ -100,7 +91,7 @@ python3 -m src.utils.training_plots runs/donut/<run-name>
 Run a fine-tuned checkpoint on an image:
 
 ```bash
-python src/Donut/run_inference.py \
+python src/Donut/run_donut_inference.py \
   --image-path /path/to/document.jpg \
   --model-id runs/donut/<run-name> \
   --task-prompt "<s_lieferschein>" \

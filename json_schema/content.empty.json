@@ -1,12 +1,10 @@
 {
   "senderInformation": {
     "senderNameCompany": null,
-    "senderNamePerson": null,
     "senderStreet": null,
     "senderPostcode": null,
     "senderCity": null,
     "senderCountryCode": {
-      "region": null,
       "value": null
     },
     "senderContactInformation": {
@@ -15,12 +13,10 @@
   },
   "consigneeInformation": {
     "consigneeNameCompany": null,
-    "consigneeNamePerson": null,
     "consigneeStreet": null,
     "consigneePostcode": null,
     "consigneeCity": null,
     "consigneeCountryCode": {
-      "region": null,
       "value": null
     }
   },
@@ -30,20 +26,17 @@
     "logisticsDateOfDeparture": null
   },
   "deliveryOfTheGoods": {
-    "logisticsLocationCity": null,
-    "logisticsLocationOpeningHours": null
+    "logisticsLocationCity": null
   },
   "sendersInstructions": {
     "transportInstructionsDescription": null
   },
   "carrierInformation": {
     "carrierNameCompany": null,
-    "carrierNamePerson": null,
     "carrierStreet": null,
     "carrierPostcode": null,
     "carrierCity": null,
     "carrierCountryCode": {
-      "region": null,
       "value": null
     },
     "carrierLicensePlate": null
@@ -55,9 +48,6 @@
     "successiveCarrierCity": null,
     "successiveCarrierCountryCode": {
       "value": null
-    },
-    "successiveCarrierContactInformation": {
-      "phone": null
     }
   },
   "carrierReservationsAndObservations": {
@@ -83,23 +73,15 @@
       },
       "grossWeightInKg": {
         "supplyChainConsignmentItemGrossWeight": null
-      },
-      "volumeInM3": {
-        "supplyChainConsignmentItemGrossVolume": null
       }
     }
   ],
-  "toBePaidBy": {
-    "customChargeCarriage": null
-  },
   "signatureOrStampOfTheSender": {
     "senderSignature": {
-      "userName": null,
       "userCompany": null,
       "userStreet": null,
       "userPostCode": null,
-      "userCity": null,
-      "userCountry": null
+      "userCity": null
     }
   },
   "signatureOrStampOfTheCarrier": {
@@ -110,21 +92,17 @@
       "userPostCode": null,
       "userCity": null,
       "userCountry": null,
-      "data": null,
       "date": null
     }
   },
   "goodsReceived": {
     "consigneeSignature": {
-      "type": null,
       "userName": null,
       "userCompany": null,
       "userStreet": null,
       "userPostCode": null,
       "userCity": null,
-      "userCountry": null,
-      "date": null,
-      "time": null
+      "date": null
     }
   },
   "referenceIdentificationNumber": null

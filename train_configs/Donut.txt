@@ -1,20 +1,234 @@
-.\.venv\Scripts\python.exe -m src.Donut.train_finetune `
-     --dataset-root data\datasets\250_CMRS_240dpi_20260707 `
-     --model-id naver-clova-ix/donut-base `
-     --local-files-only `
-     --task-start-token "<s_lieferschein>" `
-     --schema-path json_schema/content.schema.json `
-     --target-skeleton-path json_schema/content.empty.json `
-     --image-size 1280 960 `
-     --max-length 1024 `
-     --per-device-train-batch-size 1 `
-     --per-device-eval-batch-size 1 `
-     --gradient-accumulation-steps 8 `
-     --num-train-epochs 50 `
-     --learning-rate 3e-5 `
-     --warmup-steps 100 `
-     --eval-steps 50 `
-     --save-steps 50 `
-     --save-total-limit 2 `
-     --logging-steps 5 `
-    --dataloader-num-workers 0
+.\.venv\Scripts\python.exe src\Donut\run_donut_training.py
+
+Training defaults are configured in src\Donut\run_donut_training.py.
+Individual values can still be overridden, for example:
+
+.\.venv\Scripts\python.exe src\Donut\run_donut_training.py --image-size 1920 1280
+
+
+  ## 1. Improve evaluation before changing training
+
+  The first requirement is generation-based evaluation over all 49 validation images—not only two previews.
+
+  Track at least:
+
+  - Generation completion/EOS rate
+  - Repetition or max-length failure rate
+  - Valid schema rate
+  - Top-level section completeness
+  - Per-field exact match
+  - Normalized edit similarity for text fields
+  - Null precision and recall
+  - List-item precision and recall
+  - Overall document exact match
+
+  Then select the best checkpoint using a generation metric, not only eval_loss.
+
+  Checkpoint 750 has the lowest teacher-forced loss, but it is not necessarily the checkpoint with the best field accuracy. Generation metrics could peak earlier or later.
+
+  Also fix the split first: I found two document UUIDs represented in both train and validation. That creates small but real leakage. Split by source document UUID rather than page/image.
+
+  ## 2. Increase image resolution
+
+  This is probably the first training experiment I would run.
+
+  Most source images are approximately 1985×2807, but training reduces them to 1280×960. That cuts the pixel count to roughly one quarter. CMR documents contain dense, relatively small text, so this can directly
+  destroy character information.
+
+  The official donut-base configuration was pretrained with a 2560×1920 canvas. Official model configuration (https://huggingface.co/naver-clova-ix/donut-base/blob/official/config.json)
+
+  Try a controlled resolution sweep:
+
+  1. 1280×960 — current baseline
+  2. 1920×1280 — approximately twice as many pixels
+  3. 2560×1920 — approximately four times as many pixels
+
+  Start with 1920×1280 because the full pretrained resolution may be expensive. Keep batch size 1 and gradient checkpointing.
+
+  The Hugging Face processor retains aspect ratio through thumbnailing and padding, and also supports randomized padding. Donut image processor documentation
+  (https://huggingface.co/docs/transformers/v4.42.0/en/model_doc/donut)
+
+
+  ## 4. Address null and structure domination
+
+  Approximately 51% of leaf annotations are null. The model therefore receives many easy sequences such as:
+
+  <s_userName><null/></s_userName>
+
+  These tokens contribute heavily to the low loss without teaching content extraction.
+
+  There are two useful experiments.
+
+  ### Option A: weighted loss
+
+  Keep the complete fixed schema but give different token categories different weights:
+
+  - Actual content tokens: weight 1.0
+  - Field structure tokens: perhaps 0.25–0.5
+  - <null/>: perhaps 0.25
+  - EOS and list separators: 1.0
+
+  This preserves the fixed output contract while making the optimizer focus more strongly on actual document content.
+
+  ### Option B: sparse targets
+
+  Omit null-valued fields from the training sequence:
+
+  <s_senderNameCompany>Company A</s_senderNameCompany>
+  <s_senderCity>Berlin</s_senderCity>
+
+  Then restore omitted schema fields as null during postprocessing.
+
+  This would shorten the average sequence substantially, but it makes output structure variable and makes “missing because null” indistinguishable from “model forgot the field.” I would test weighted loss first.
+
+  ## 5. Make lists explicit
+
+  The current list representation uses only <sep/> between items. A more explicit representation would be:
+
+  <s_itemList>
+    <s_item>
+      ...
+    </s_item>
+    <s_item>
+      ...
+    </s_item>
+  </s_itemList>
+
+  Advantages:
+
+  - Singleton and multi-item lists use the same grammar
+  - Item boundaries are explicit
+  - Constrained decoding becomes easier
+  - The model is less likely to merge consecutive items
+
+  This requires a custom parser and retraining, so I would treat it as a larger serialization experiment.
+
+  ## 6. Consider section-wise generation
+
+  A roughly 500-token prediction is long for autoregressive visual extraction. One early error can derail hundreds of later tokens.
+
+  Instead of generating the entire document in one sequence, train one prompted task per logical section:
+
+  <s_sender_section>       → sender fields
+  <s_consignee_section>    → consignee fields
+  <s_carrier_section>      → carrier fields
+  <s_items_section>        → item list
+  <s_signatures_section>   → signature fields
+
+  Each original image becomes several training examples with different prompts but the same image.
+
+  Advantages:
+
+  - Much shorter outputs
+  - Less exposure-error accumulation
+  - Easier debugging and per-section metrics
+  - The item table can have its own specialized representation
+  - More supervised examples from the same 200 images
+
+  The downside is several decoder calls per document. For this dataset size and schema complexity, I think that tradeoff may be worthwhile.
+
+  ## 7. Add conservative image augmentation
+
+  With only 200 training images, label-preserving augmentation should help:
+
+  - Small rotations, perhaps ±1–2°
+  - Brightness and contrast variation
+  - Mild blur
+  - JPEG compression
+  - Scanner noise
+  - Slight scaling
+  - Randomized padding/translation
+
+  Avoid aggressive cropping because it can remove annotated fields.
+
+  The official Donut preprocessing includes randomized canvas padding, and the Donut project emphasizes synthetic document data for adapting across domains and languages. Official Donut code
+  (https://github.com/clovaai/donut/blob/master/donut/model.py), Donut paper (https://arxiv.org/abs/2111.15664)
+
+  Augmented copies improve robustness, but they do not add new company names, layouts, handwriting, or field-value diversity.
+
+  ## 8. Generate synthetic CMR documents
+
+  For this fixed form, synthetic data could be especially valuable.
+
+  Create CMR templates populated with randomized:
+
+  - Company names and addresses
+  - Country codes
+  - Dates
+  - Package quantities
+  - Weights and volumes
+  - License plates
+  - Reference numbers
+  - One to several item rows
+  - Empty versus populated fields
+
+  Then apply printing/scanning artifacts and pretrain on thousands of synthetic examples before fine-tuning on the 200 real pages.
+
+  The important part is to vary fonts, stamp positions, handwriting-like overlays, line noise, and document templates. Otherwise, the model may simply learn the synthetic renderer.
+
+  ## 9. Change the fine-tuning strategy
+
+  All 202 million parameters currently train at one learning rate of 3e-5. With 200 images, that is aggressive.
+
+  I would compare:
+
+  ### Baseline
+
+  - Full model
+  - 3e-5
+  - Early stop near 25–30 epochs
+
+  ### Lower learning rate
+
+  - Full model
+  - 1e-5
+  - 20–30 epochs
+
+  ### Staged training
+
+  1. Freeze the visual encoder and train the decoder/new special-token embeddings.
+  2. Unfreeze the encoder.
+  3. Continue with a smaller encoder learning rate.
+
+  For example:
+
+  - Decoder: 2e-5
+  - Encoder: 5e-6
+
+  This can reduce destructive changes to pretrained visual features while still adapting the decoder to the schema.
+
+  A small label-smoothing value such as 0.05 is also worth testing after the stronger experiments above. It may reduce overconfidence and greedy-decoding collapse.
+
+  ## 10. Constrain generation
+
+  Canonical training does not guarantee canonical inference. The decoder can still emit any vocabulary token at every step.
+
+  A schema-aware generation state machine could:
+
+  - Only allow the expected next field opening tag
+  - Allow content tokens inside a field
+  - Allow only that field’s closing tag
+  - Enforce list-item transitions
+  - Only permit EOS after the root structure closes
+
+  This would have prevented sample 1 from wandering into its repeated garbage sequence. It cannot fix incorrect content, but it can guarantee structural validity and limit error propagation.
+
+  Also test:
+
+  - Beam width 3
+  - A mild repetition penalty
+  - Repeated-ngram detection
+  - Explicit detection of max-length failures
+
+  I would prefer grammar constraints over a strong generic repetition penalty, because legitimate addresses and company names can repeat.
+
+  4. Test schema/visual field order instead of alphabetical order.
+  5. Test content-weighted loss.
+  6. Add conservative training augmentation.
+  7. Test staged encoder/decoder learning rates.
+  8. Add schema-constrained generation.
+  9. If results remain weak, move to section-wise prediction.
+  10. Add synthetic CMR pretraining or substantially more real annotations.
+
+  My strongest near-term bets are higher resolution, generation-based checkpoint selection, content-weighted loss, and schema-constrained decoding. The current canonical serialization is already a good foundation;
+  literal JSON syntax is not what is limiting this run.

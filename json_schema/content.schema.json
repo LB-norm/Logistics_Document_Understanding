@@ -16,7 +16,6 @@
     "carrierReservationsAndObservations",
     "documentsHandedToCarrier",
     "itemList",
-    "toBePaidBy",
     "signatureOrStampOfTheSender",
     "signatureOrStampOfTheCarrier",
     "goodsReceived",
@@ -56,9 +55,6 @@
         "$ref": "#/$defs/item"
       }
     },
-    "toBePaidBy": {
-      "$ref": "#/$defs/to_be_paid_by"
-    },
     "signatureOrStampOfTheSender": {
       "$ref": "#/$defs/signature_or_stamp_of_the_sender"
     },
@@ -93,29 +89,7 @@
         "null"
       ]
     },
-    "nullable_number": {
-      "type": [
-        "number",
-        "null"
-      ]
-    },
     "country_code": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "region",
-        "value"
-      ],
-      "properties": {
-        "region": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "value": {
-          "$ref": "#/$defs/nullable_string"
-        }
-      }
-    },
-    "country_code_value_only": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -144,7 +118,6 @@
       "additionalProperties": false,
       "required": [
         "senderNameCompany",
-        "senderNamePerson",
         "senderStreet",
         "senderPostcode",
         "senderCity",
@@ -153,9 +126,6 @@
       ],
       "properties": {
         "senderNameCompany": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "senderNamePerson": {
           "$ref": "#/$defs/nullable_string"
         },
         "senderStreet": {
@@ -180,7 +150,6 @@
       "additionalProperties": false,
       "required": [
         "consigneeNameCompany",
-        "consigneeNamePerson",
         "consigneeStreet",
         "consigneePostcode",
         "consigneeCity",
@@ -188,9 +157,6 @@
       ],
       "properties": {
         "consigneeNameCompany": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "consigneeNamePerson": {
           "$ref": "#/$defs/nullable_string"
         },
         "consigneeStreet": {
@@ -231,14 +197,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "logisticsLocationCity",
-        "logisticsLocationOpeningHours"
+        "logisticsLocationCity"
       ],
       "properties": {
         "logisticsLocationCity": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "logisticsLocationOpeningHours": {
           "$ref": "#/$defs/nullable_string"
         }
       }
@@ -260,7 +222,6 @@
       "additionalProperties": false,
       "required": [
         "carrierNameCompany",
-        "carrierNamePerson",
         "carrierStreet",
         "carrierPostcode",
         "carrierCity",
@@ -269,9 +230,6 @@
       ],
       "properties": {
         "carrierNameCompany": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "carrierNamePerson": {
           "$ref": "#/$defs/nullable_string"
         },
         "carrierStreet": {
@@ -299,8 +257,7 @@
         "successiveCarrierStreet",
         "successiveCarrierPostcode",
         "successiveCarrierCity",
-        "successiveCarrierCountryCode",
-        "successiveCarrierContactInformation"
+        "successiveCarrierCountryCode"
       ],
       "properties": {
         "successiveCarrierNameCompany": {
@@ -316,10 +273,7 @@
           "$ref": "#/$defs/nullable_string"
         },
         "successiveCarrierCountryCode": {
-          "$ref": "#/$defs/country_code_value_only"
-        },
-        "successiveCarrierContactInformation": {
-          "$ref": "#/$defs/contact_information"
+          "$ref": "#/$defs/country_code"
         }
       }
     },
@@ -355,8 +309,7 @@
         "numberOfPackages",
         "methodOfPacking",
         "natureOfTheGoods",
-        "grossWeightInKg",
-        "volumeInM3"
+        "grossWeightInKg"
       ],
       "properties": {
         "marksAndNos": {
@@ -373,9 +326,6 @@
         },
         "grossWeightInKg": {
           "$ref": "#/$defs/gross_weight_in_kg"
-        },
-        "volumeInM3": {
-          "$ref": "#/$defs/volume_in_m3"
         }
       }
     },
@@ -443,45 +393,16 @@
         }
       }
     },
-    "volume_in_m3": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "supplyChainConsignmentItemGrossVolume"
-      ],
-      "properties": {
-        "supplyChainConsignmentItemGrossVolume": {
-          "$ref": "#/$defs/nullable_number"
-        }
-      }
-    },
-    "to_be_paid_by": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "customChargeCarriage"
-      ],
-      "properties": {
-        "customChargeCarriage": {
-          "$ref": "#/$defs/nullable_string"
-        }
-      }
-    },
     "sender_signature": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "userName",
         "userCompany",
         "userStreet",
         "userPostCode",
-        "userCity",
-        "userCountry"
+        "userCity"
       ],
       "properties": {
-        "userName": {
-          "$ref": "#/$defs/nullable_string"
-        },
         "userCompany": {
           "$ref": "#/$defs/nullable_string"
         },
@@ -492,9 +413,6 @@
           "$ref": "#/$defs/nullable_string_or_integer"
         },
         "userCity": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "userCountry": {
           "$ref": "#/$defs/nullable_string"
         }
       }
@@ -509,7 +427,6 @@
         "userPostCode",
         "userCity",
         "userCountry",
-        "data",
         "date"
       ],
       "properties": {
@@ -531,9 +448,6 @@
         "userCountry": {
           "$ref": "#/$defs/nullable_string"
         },
-        "data": {
-          "$ref": "#/$defs/nullable_string"
-        },
         "date": {
           "$ref": "#/$defs/nullable_string"
         }
@@ -543,20 +457,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "type",
         "userName",
         "userCompany",
         "userStreet",
         "userPostCode",
         "userCity",
-        "userCountry",
-        "date",
-        "time"
+        "date"
       ],
       "properties": {
-        "type": {
-          "$ref": "#/$defs/nullable_string"
-        },
         "userName": {
           "$ref": "#/$defs/nullable_string"
         },
@@ -572,13 +480,7 @@
         "userCity": {
           "$ref": "#/$defs/nullable_string"
         },
-        "userCountry": {
-          "$ref": "#/$defs/nullable_string"
-        },
         "date": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "time": {
           "$ref": "#/$defs/nullable_string"
         }
       }
