@@ -10,7 +10,7 @@ class DonutTrainingLauncherTests(unittest.TestCase):
     def test_launcher_configuration_supplies_training_defaults(self) -> None:
         args = parse_args([], defaults=DEFAULT_TRAINING_CONFIG)
 
-        self.assertEqual(args.image_size, (1280, 960))
+        self.assertEqual(args.image_size, (1920, 1280))
         self.assertEqual(args.per_device_train_batch_size, 1)
         self.assertEqual(args.gradient_accumulation_steps, 8)
         self.assertTrue(args.gradient_checkpointing)

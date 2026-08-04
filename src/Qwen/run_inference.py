@@ -25,7 +25,7 @@ DEFAULT_IMAGE_PATH = DEFAULT_SMALL_TEST_IMAGE_PATH
 DEFAULT_SCHEMA_PATH = REPO_ROOT / "src" / "Donut" / "lieferschein.schema.json"
 DEFAULT_EXAMPLE_PATH = DEFAULT_SMALL_TEST_EXAMPLE_PATH
 DEFAULT_OUTPUT_PATH = REPO_ROOT / "output" / "qwen_lieferschein_inference.json"
-DEFAULT_MODEL_ID = "Qwen/Qwen3.5-27B"
+DEFAULT_MODEL_ID = "Qwen/Qwen3.5-2B"
 DEFAULT_ANNOTATION_TARGET_KEY = "content"
 
 PRESERVE_TEMPLATE_KEYS = {"document_type", "document_language"}
@@ -34,7 +34,7 @@ PRESERVE_TEMPLATE_KEYS = {"document_type", "document_language"}
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run inference with Qwen3.5-27B on a document image and normalize the "
+            "Run inference with a Qwen3.5 vision-language model on a document image and normalize the "
             "response into the project JSON skeleton."
         )
     )
@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         "--adapter-path",
         type=Path,
         default=None,
-        help="Optional LoRA adapter path produced by src/Qwen/train_finetune.py.",
+        help="Optional LoRA adapter path produced by src/Qwen/run_qwen_training.py.",
     )
     parser.add_argument(
         "--schema-path",
@@ -458,7 +458,7 @@ def main() -> int:
     notes: list[str] = []
     if args.adapter_path is None:
         notes.append(
-            "No LoRA adapter was provided. The base Qwen3.5-27B model can run, but extraction quality will "
+            "No LoRA adapter was provided. The base Qwen3.5 model can run, but extraction quality will "
             "only be meaningful after task-specific fine-tuning."
         )
 

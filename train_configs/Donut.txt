@@ -1,9 +1,27 @@
-.\.venv\Scripts\python.exe src\Donut\run_donut_training.py
-
-Training defaults are configured in src\Donut\run_donut_training.py.
-Individual values can still be overridden, for example:
-
-.\.venv\Scripts\python.exe src\Donut\run_donut_training.py --image-size 1920 1280
+.\.venv\Scripts\python.exe -m src.Donut.train_finetune `
+    --dataset-root data\datasets\250_CMRS_240dpi_20260707 `
+    --model-id naver-clova-ix/donut-base `
+    --local-files-only `
+    --task-start-token "<s_lieferschein>" `
+    --schema-path json_schema\content.schema.json `
+    --target-skeleton-path json_schema\content.empty.json `
+    --image-size 1280 960 `
+    --max-length 1024 `
+    --per-device-train-batch-size 1 `
+    --per-device-eval-batch-size 1 `
+    --gradient-accumulation-steps 8 `
+    --gradient-checkpointing `
+    --num-train-epochs 50 `
+    --learning-rate 3e-5 `
+    --weight-decay 0.01 `
+    --warmup-steps 100 `
+    --eval-steps 50 `
+    --save-steps 50 `
+    --save-total-limit 2 `
+    --logging-steps 25 `
+    --validation-preview-samples 2 `
+    --dataloader-num-workers 0 `
+    --seed 42 `
 
 
   ## 1. Improve evaluation before changing training
@@ -47,7 +65,6 @@ Individual values can still be overridden, for example:
 
   The Hugging Face processor retains aspect ratio through thumbnailing and padding, and also supports randomized padding. Donut image processor documentation
   (https://huggingface.co/docs/transformers/v4.42.0/en/model_doc/donut)
-
 
   ## 4. Address null and structure domination
 

@@ -25,6 +25,7 @@ from src.utils.training_history import (
     summarize_training_history,
 )
 from src.utils.training_plots import generate_training_plots
+from src.eval_suite import JsonEvaluator, make_compute_metrics
 
 DEFAULT_SCHEMA_PATH = REPO_ROOT / "json_schema" / "content.schema.json"
 DEFAULT_TARGET_SKELETON_PATH = REPO_ROOT / "json_schema" / "content.empty.json"
@@ -233,7 +234,10 @@ def parse_args(
     parser.add_argument(
         "--predict-with-generate",
         action="store_true",
-        help="Enable generation during evaluation. Slower, but useful for inspecting outputs.",
+        help=(
+            "Generate validation outputs and report structured JSON metrics from eval_suite. "
+            "This is slower than loss-only evaluation."
+        ),
     )
     parser.add_argument(
         "--max-steps",
@@ -970,6 +974,52 @@ def normalize_prediction_to_schema(
     return prediction
 
 
+def build_donut_compute_metrics(
+    processor: Any,
+    target_schema: Any,
+    root_schema: Any,
+) -> Any:
+    """Create structured JSON metrics for generated Donut token sequences."""
+
+    def decode_rows(token_rows: Any, *, generated: bool) -> list[Any]:
+        if isinstance(token_rows, tuple):
+            token_rows = token_rows[0]
+        rows = token_rows.tolist() if hasattr(token_rows, "tolist") else token_rows
+        pad_id = processor.tokenizer.pad_token_id
+        restored_rows = [
+            [pad_id if token_id == -100 else token_id for token_id in row]
+            for row in rows
+        ]
+        sequences = processor.batch_decode(restored_rows)
+        decoded: list[Any] = []
+        for sequence in sequences:
+            if generated:
+                cleaned = clean_generated_sequence(sequence, processor)
+            else:
+                cleaned = sequence
+                if processor.tokenizer.eos_token:
+                    cleaned = cleaned.replace(processor.tokenizer.eos_token, "")
+                if processor.tokenizer.pad_token:
+                    cleaned = cleaned.replace(processor.tokenizer.pad_token, "")
+                cleaned = cleaned.strip()
+            parsed, parse_error = parse_generated_sequence(cleaned, processor)
+            if parse_error:
+                # A non-JSON string lets JsonEvaluator account for this as a parse
+                # failure and as missing expected values.
+                decoded.append(f"Donut parse error: {parse_error}")
+                continue
+            decoded.append(
+                normalize_prediction_to_schema(parsed, target_schema, root_schema)
+            )
+        return decoded
+
+    return make_compute_metrics(
+        decode_predictions=lambda rows: decode_rows(rows, generated=True),
+        decode_references=lambda rows: decode_rows(rows, generated=False),
+        evaluator=JsonEvaluator(schema=target_schema),
+    )
+
+
 def generate_validation_preview_sample(
     *,
     torch: Any,
@@ -1447,8 +1497,10 @@ def build_training_arguments(
         "do_train": True,
         "do_eval": True,
         "load_best_model_at_end": True,
-        "metric_for_best_model": "eval_loss",
-        "greater_is_better": False,
+        "metric_for_best_model": (
+            "eval_json_field_f1" if args.predict_with_generate else "eval_loss"
+        ),
+        "greater_is_better": bool(args.predict_with_generate),
         "seed": args.seed,
     }
     signature = inspect.signature(Seq2SeqTrainingArguments)
@@ -1693,8 +1745,10 @@ def main(
         },
         "checkpoint_policy": {
             "retained": "best_and_last",
-            "metric": "eval_loss",
-            "greater_is_better": False,
+            "metric": (
+                "eval_json_field_f1" if args.predict_with_generate else "eval_loss"
+            ),
+            "greater_is_better": bool(args.predict_with_generate),
             "save_total_limit": args.save_total_limit,
             "save_steps": args.save_steps,
             "eval_steps": args.eval_steps,
@@ -1746,6 +1800,11 @@ def main(
         eval_dataset=validation_dataset,
         data_collator=data_collator,
         callbacks=callbacks,
+        compute_metrics=(
+            build_donut_compute_metrics(processor, target_schema, schema)
+            if args.predict_with_generate
+            else None
+        ),
     )
 
     train_output = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)

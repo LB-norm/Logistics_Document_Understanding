@@ -21,12 +21,12 @@ from src.Donut.donut_train_logic import main as run_training
 
 DEFAULT_TRAINING_CONFIG: dict[str, Any] = {
     "dataset_root": REPO_ROOT / "data" / "datasets" / "250_CMRS_240dpi_20260707",
-    "model_id": "naver-clova-ix/donut-base",
+    "model_id": "naver-clova-ix/donut-base",        #Start from base model
     "local_files_only": True,
     "task_start_token": "<s_lieferschein>",
     "schema_path": REPO_ROOT / "json_schema" / "content.schema.json",
     "target_skeleton_path": REPO_ROOT / "json_schema" / "content.empty.json",
-    "image_size": (1280, 960),
+    "image_size": (1920, 1280),
     "max_length": 1024,
     "per_device_train_batch_size": 1,
     "per_device_eval_batch_size": 1,
@@ -36,10 +36,10 @@ DEFAULT_TRAINING_CONFIG: dict[str, Any] = {
     "learning_rate": 3e-5,
     "weight_decay": 0.01,
     "warmup_steps": 100,
-    "eval_steps": 50,
-    "save_steps": 50,
+    "eval_steps": 50,       #Every 2 epochs (8*50 = 400; 200 images in the Trainset)
+    "save_steps": 50,       #Every 2 epochs
     "save_total_limit": 2,
-    "logging_steps": 25,
+    "logging_steps": 50,    #Every 2 epochs
     "validation_preview_samples": 2,
     "dataloader_num_workers": 0,
     "seed": 42,

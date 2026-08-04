@@ -9,16 +9,80 @@ from unittest.mock import patch
 
 from src.Donut.donut_train_logic import (
     add_target_sequences,
+    build_donut_compute_metrics,
+    build_training_arguments,
     build_validation_preview_callback,
     json_differences,
     json_to_donut_tokens,
     normalize_prediction_to_schema,
+    parse_args,
     select_validation_preview_examples,
     write_validation_preview,
 )
 
 
 class DonutValidationPreviewTests(unittest.TestCase):
+    def test_generation_metrics_drive_best_checkpoint_when_enabled(self) -> None:
+        class FakeTrainingArguments:
+            def __init__(self, evaluation_strategy=None, **kwargs):
+                self.evaluation_strategy = evaluation_strategy
+                self.values = kwargs
+
+        args = parse_args(["--predict-with-generate"])
+        training_args = build_training_arguments(
+            FakeTrainingArguments,
+            args,
+            Path("output"),
+            bf16=False,
+            fp16=False,
+            gradient_checkpointing=False,
+        )
+
+        self.assertEqual(
+            training_args.values["metric_for_best_model"],
+            "eval_json_field_f1",
+        )
+        self.assertTrue(training_args.values["greater_is_better"])
+
+    def test_structured_compute_metrics_decodes_predictions_and_labels(self) -> None:
+        class FakeTokenizer:
+            pad_token_id = 0
+            pad_token = "<pad>"
+            eos_token = "<eos>"
+
+        class FakeProcessor:
+            tokenizer = FakeTokenizer()
+
+            @staticmethod
+            def batch_decode(rows):
+                decoded = {
+                    (1, 2): "<s_lieferschein><s_sender>ACME</s_sender><eos>",
+                    (3, 0): "<s_sender>ACME</s_sender><eos><pad>",
+                }
+                return [decoded[tuple(row)] for row in rows]
+
+            @staticmethod
+            def token2json(sequence):
+                if sequence == "<s_sender>ACME</s_sender>":
+                    return {"sender": "ACME"}
+                raise ValueError("unparseable")
+
+        schema = {
+            "type": "object",
+            "required": ["sender"],
+            "properties": {"sender": {"type": "string"}},
+        }
+        compute_metrics = build_donut_compute_metrics(
+            FakeProcessor(), schema, schema
+        )
+
+        metrics = compute_metrics(
+            SimpleNamespace(predictions=[[1, 2]], label_ids=[[3, -100]])
+        )
+
+        self.assertEqual(metrics["json_field_f1"], 1.0)
+        self.assertEqual(metrics["json_schema_valid_rate"], 1.0)
+
     def test_target_serialization_follows_template_order_recursively(self) -> None:
         target_skeleton = {
             "sender": {"name": None, "city": None},

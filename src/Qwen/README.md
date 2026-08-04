@@ -1,89 +1,208 @@
-# Qwen Fine-Tuning Pipeline
+# Qwen QLoRA training
 
-This folder contains a Qwen3.5-27B LoRA/QLoRA training script and an inference script for the Lieferschein extraction task.
+This pipeline fine-tunes Qwen vision-language models for CMR and delivery-note extraction.
+The default run uses `Qwen/Qwen3.5-2B` and fits on an RTX 3080 Ti with 12 GB VRAM.
 
-The trainer supports two dataset layouts:
+## Files
 
-- the current project dataset under `data/datasets/raw_data_20260527`
-- a prepared Qwen conversational JSONL dataset under a folder such as `data/qwen_lora_dataset`
+- `run_qwen_training.py`: training entry point and project defaults
+- `qwen_finetune_logic.py`: dataset loading, collation, QLoRA setup, validation previews,
+  and Trainer integration
+- `train_finetune.py`: compatibility wrapper for the old entry point
+- `run_inference.py`: load a saved adapter and process one image
 
-The conversational format is based on the official Hugging Face documentation for:
+Edit `DEFAULT_TRAINING_CONFIG` in `run_qwen_training.py` for the usual experiment setup.
+Any command-line argument overrides the corresponding default.
 
-- Qwen3.5 multimodal support in Transformers
-- vision-language SFT dataset formats in TRL
-- SFT guidance to avoid truncating image tokens by leaving `max_length=None`
+## Start training
 
-## Project Dataset Layout
+Run these commands from the repository root.
 
-The default dataset root is `data/datasets/raw_data_20260527`:
+Check that the dataset and annotations can be read. This does not load Qwen:
+
+```powershell
+.\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py --dry-run
+```
+
+Start the default 2B QLoRA run:
+
+```powershell
+$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+.\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py
+```
+
+With an activated Linux environment, the equivalent command is:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+python src/Qwen/run_qwen_training.py
+```
+
+The first run downloads the base model from Hugging Face. Use
+`--local-files-only` only after the checkpoint is cached.
+
+The default configuration is:
+
+| Setting | Value |
+| --- | --- |
+| Model | `Qwen/Qwen3.5-2B` |
+| Quantization | NF4 4-bit with double quantization |
+| Compute dtype | BF16 |
+| Image budget | 1,048,576 pixels |
+| Maximum training sequence | 2,048 tokens |
+| Batch size | 1 |
+| Gradient accumulation | 8 |
+| LoRA | rank 16, alpha 32, dropout 0.05 |
+| LoRA targets | all matching language-side linear layers |
+| Vision encoder | frozen |
+| Epochs | 10 |
+| Evaluation, checkpoints, previews | every 50 optimizer steps |
+
+To change one value without editing the launcher:
+
+```powershell
+.\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py `
+  --num-train-epochs 6 `
+  --learning-rate 5e-5 `
+  --run-name qwen35-2b-six-epochs
+```
+
+## What is trained
+
+Each project example contains the document image, a system instruction, an extraction
+prompt, and the annotation's `content` object as the assistant answer. Loss is calculated
+only on the assistant tokens. The prompt, padding, and image tokens are masked.
+
+With the default `--vision-tuning frozen` mode, the Qwen base weights and vision encoder
+remain unchanged. LoRA matrices are trained in the language-model linear layers. The saved
+adapter therefore needs the original base model at inference time.
+
+The JSON Schema is used for validation reports; it is not used to constrain decoding. The
+model learns the key names, nesting, null handling, and field placement from the training
+answers.
+
+## Vision modes
+
+| Command | Trained parameters | Typical use |
+| --- | --- | --- |
+| `--vision-tuning frozen` | Language LoRA only | Default 12 GB run |
+| `--vision-tuning lora` | Language and vision LoRA | Adapt visual features with a moderate memory increase |
+| `--vision-tuning full --no-load-in-4bit` | Language LoRA and the full vision encoder | Larger GPU; the full vision module is saved with the adapter |
+
+The code looks for `visual`, `vision_tower`, or `vision_model`. Use
+`--vision-module-names` for another model layout.
+
+Example with vision-side LoRA:
+
+```powershell
+.\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py `
+  --vision-tuning lora `
+  --run-name qwen35-2b-vision-lora
+```
+
+## Larger Qwen models
+
+The model loader and LoRA target selection are not tied to the 2B checkpoint. On a larger
+machine, select another compatible checkpoint and adjust the memory settings:
+
+```powershell
+.\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py `
+  --model-id Qwen/Qwen3.5-9B `
+  --gradient-accumulation-steps 16 `
+  --run-name qwen35-9b-language-qlora
+```
+
+The main memory controls are `--max-pixels`, `--max-length`, batch size, LoRA rank,
+quantization, and gradient checkpointing. Keep `modules_to_save` empty unless an additional
+non-LoRA module must be trained and stored.
+
+## Validation during training
+
+The launcher selects two validation documents once and generates their JSON after each
+training log. Reports are stored in:
+
+```text
+runs/qwen/<run-name>/validation_previews/
+|-- latest.html
+|-- latest.json
+|-- step_00000050.html
+`-- step_00000050.json
+```
+
+`latest.html` shows the target, prediction, field differences, parse errors, schema errors,
+and field metrics. These previews use `model.generate()` without the target answer. Regular
+`eval_loss` uses teacher forcing over the complete validation split, so the two measurements
+answer different questions.
+
+Preview generation affects runtime but does not create gradients. Adjust it with:
+
+```text
+--validation-preview-samples 0           disable previews
+--validation-preview-max-new-tokens 512 shorten generated answers
+--logging-steps 100                      generate less often
+```
+
+## Run output and resume
+
+Without `--output-dir`, runs are created under `runs/qwen/`. A completed run contains the
+adapter, processor files, retained checkpoints, `training_config.json`,
+`trainer_state.json`, and `run_metadata.json`.
+
+Resume an interrupted run with the same output directory:
+
+```powershell
+.\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py `
+  --output-dir runs\qwen\<run-name> `
+  --resume-from-checkpoint runs\qwen\<run-name>\checkpoint-<step>
+```
+
+## Inference
+
+Run one image with a saved adapter:
+
+```powershell
+.\.venv\Scripts\python.exe src\Qwen\run_inference.py `
+  --adapter-path runs\qwen\<run-name> `
+  --image-path path\to\document.png
+```
+
+Use `--help` to list the remaining inference options.
+
+## Dataset formats
+
+### Project layout
+
+The launcher defaults to `data/datasets/250_CMRS_240dpi_20260707`:
 
 ```text
 dataset_root/
-  train/
-    metadata.jsonl
-    images/...
-    annotations/...
-  val/
-    metadata.jsonl
-    images/...
-    annotations/...
-  test/
-    metadata.jsonl
-    images/...
-    annotations/...
+|-- train/
+|   |-- metadata.jsonl
+|   |-- images/
+|   `-- annotations/
+`-- val/
+    |-- metadata.jsonl
+    |-- images/
+    `-- annotations/
 ```
 
-Each metadata row points to an image and annotation:
+A metadata row contains:
 
 ```json
 {
-  "id": "cmr_dachser__example_page_1",
-  "image": "train/images/cmr_dachser/example_page_1.jpg",
-  "annotation": "train/annotations/cmr_dachser/example_page_1_0.json"
+  "id": "cmr_example_page_1",
+  "image": "train/images/cmr_example_page_1.jpg",
+  "annotation": "train/annotations/cmr_example_page_1.json"
 }
 ```
 
-By default, `annotation["content"]` is serialized as the final assistant message. Annotation `metadata` is ignored. Use `--annotation-target-key root` only if you intentionally want the full annotation wrapper as the target.
+`annotation["content"]` is the default target. Set `--annotation-target-key root` only
+when the annotation wrapper should be part of the answer.
 
-Run a dataset parsing dry run without loading model dependencies:
+### Conversational JSONL
 
-```bash
-python3 src/Qwen/train_finetune.py \
-  --dataset-root data/datasets/raw_data_20260527 \
-  --dry-run
-```
-
-Runtime dependencies for actual training include `peft`. The default QLoRA path also requires `bitsandbytes`; pass `--no-load-in-4bit` for regular LoRA when you do not want the 4-bit path.
-
-## Qwen JSONL Layout
-
-```text
-data/qwen_lora_dataset/
-  train.jsonl
-  validation.jsonl
-  images/
-    sample-0001.png
-    sample-0002.png
-    sample-0003-page1.png
-    sample-0003-page2.png
-```
-
-- `train.jsonl` and `validation.jsonl` contain one JSON object per line.
-- Image paths inside the JSONL files are resolved relative to `dataset-root`.
-- Single-page samples should use `image` or `image_path`.
-- Multi-page samples should use `images` or `image_paths`.
-
-## Required Record Structure
-
-Each record must contain:
-
-- `messages`: a chat-style conversation
-- one of `image`, `image_path`, `images`, or `image_paths`
-- a final `assistant` message containing the target JSON string
-
-The training script normalizes string content into typed text blocks, but the recommended format is the typed block structure below because it matches the official TRL vision dataset layout.
-
-### Single-Image Example
+The alternative layout contains `train.jsonl`, `validation.jsonl`, and referenced images.
+Each row needs an image path and a chat conversation ending in the target assistant answer:
 
 ```json
 {
@@ -91,133 +210,28 @@ The training script normalizes string content into typed text blocks, but the re
   "image": "images/sample-0001.png",
   "messages": [
     {
-      "role": "system",
-      "content": [
-        {
-          "type": "text",
-          "text": "You extract key information from German delivery note scans. Return JSON only."
-        }
-      ]
-    },
-    {
       "role": "user",
       "content": [
-        { "type": "image" },
-        {
-          "type": "text",
-          "text": "Extract the document into the target Lieferschein JSON schema."
-        }
+        {"type": "image"},
+        {"type": "text", "text": "Extract this document as JSON."}
       ]
     },
     {
       "role": "assistant",
       "content": [
-        {
-          "type": "text",
-          "text": "{\"document_type\":\"lieferschein\",\"document_language\":\"de\",\"sale_type\":null,\"delivery_note_number\":\"2017042708\",\"document_date\":\"27.04.2017\",\"document_date_iso\":\"2017-04-27\",\"customer_number\":\"10001\",\"clerk\":\"Carsten Hilgers\",\"issuer\":{\"name\":\"Carsten Hilgers Zweiraeder\",\"address\":{\"street\":\"Stahlwerkstr. 57\",\"postal_code\":\"26689\",\"city\":\"Apen\",\"country\":null,\"address_lines\":[\"Stahlwerkstr. 57\",\"26689 Apen\"]},\"contact\":{\"phone\":\"04489-63856\",\"fax\":\"04489-63857\",\"email\":\"zweirad.hilgers@t-online.de\"}},\"recipient\":null,\"items\":[{\"line_number\":1,\"quantity\":\"2\",\"unit\":\"Stk.\",\"article_number\":\"ET0001 - AV\",\"description\":\"RCP Fahrradschlauch 26 Zoll universal - Autoventil\"}],\"notes\":[],\"signatory\":\"Carsten Hilgers\"}"
-        }
+        {"type": "text", "text": "{\"senderInformation\": {}, \"itemList\": []}"}
       ]
     }
   ]
 }
 ```
 
-### Multi-Image Example
+Image paths are relative to `--dataset-root`. Use `images` or `image_paths` for multi-page
+examples and include one image block per image. The final message must have role
+`assistant` and contain valid target JSON.
 
-```json
-{
-  "id": "sample-0003",
-  "images": [
-    "images/sample-0003-page1.png",
-    "images/sample-0003-page2.png"
-  ],
-  "messages": [
-    {
-      "role": "system",
-      "content": [
-        {
-          "type": "text",
-          "text": "You extract key information from German delivery note scans. Return JSON only."
-        }
-      ]
-    },
-    {
-      "role": "user",
-      "content": [
-        { "type": "image" },
-        { "type": "image" },
-        {
-          "type": "text",
-          "text": "Use both pages and return one JSON object for the full document."
-        }
-      ]
-    },
-    {
-      "role": "assistant",
-      "content": [
-        {
-          "type": "text",
-          "text": "{\"document_type\":\"lieferschein\",\"document_language\":\"de\",\"sale_type\":null,\"delivery_note_number\":\"...\",\"document_date\":\"...\",\"document_date_iso\":null,\"customer_number\":null,\"clerk\":null,\"issuer\":{\"name\":\"...\",\"address\":null,\"contact\":null},\"recipient\":null,\"items\":[],\"notes\":[],\"signatory\":null}"
-        }
-      ]
-    }
-  ]
-}
-```
+## References
 
-## Validation Rules Enforced By The Script
-
-- The last message must be an `assistant` message.
-- The final assistant message is the supervised target used for loss computation.
-- The number of image placeholders in `messages` must match the number of image paths.
-- If image placeholders are missing entirely, the script prepends them to the last `user` message automatically.
-- Every referenced image file must exist.
-
-## Practical Annotation Rules
-
-- Keep the assistant output as strict JSON without markdown fences.
-- Use `null` for missing scalar fields and `[]` for missing lists.
-- Keep field names stable across the whole dataset.
-- Store the full expected extraction result in the final assistant message.
-- If you want the model to follow a schema exactly, include the schema or a short extraction instruction in the system or user message consistently across the dataset.
-
-## Training Command
-
-Dataset-only dry run:
-
-```bash
-python3 src/Qwen/train_finetune.py --dry-run
-```
-
-QLoRA command for the current project dataset:
-
-```bash
-python3 src/Qwen/train_finetune.py \
-  --dataset-root data/datasets/raw_data_20260527 \
-  --model-id Qwen/Qwen3.5-27B \
-  --output-dir models/qwen-lieferschein-lora \
-  --load-in-4bit \
-  --compute-dtype bfloat16 \
-  --per-device-train-batch-size 1 \
-  --gradient-accumulation-steps 8
-```
-
-For a prepared JSONL dataset, pass `--dataset-root data/qwen_lora_dataset`.
-
-## Inference Command
-
-After training, run:
-
-```bash
-python3 src/Qwen/run_inference.py --adapter-path models/qwen-lieferschein-lora
-```
-
-The default inference image and template come from `data/small testing` and use the annotation `content` object as the JSON skeleton.
-
-## Sources
-
-- Hugging Face model card for `Qwen/Qwen3.5-27B`: https://huggingface.co/Qwen/Qwen3.5-27B
-- Hugging Face Transformers Qwen3.5 docs: https://huggingface.co/docs/transformers/model_doc/qwen3_5
-- Hugging Face TRL dataset formats: https://huggingface.co/docs/trl/main/dataset_formats
-- Hugging Face TRL SFT trainer docs: https://huggingface.co/docs/trl/sft_trainer
-- Hugging Face TRL multimodal SFT guide: https://huggingface.co/docs/trl/main/en/training_vlm_sft
+- [Qwen3.5-2B model card](https://huggingface.co/Qwen/Qwen3.5-2B)
+- [Transformers Qwen3.5 documentation](https://huggingface.co/docs/transformers/model_doc/qwen3_5)
+- [TRL vision-language SFT guide](https://huggingface.co/docs/trl/main/en/training_vlm_sft)

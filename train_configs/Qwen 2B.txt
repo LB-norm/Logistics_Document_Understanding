@@ -1,0 +1,165 @@
+• Yes—this is a genuinely promising first Qwen benchmark. The model learned the JSON structure very reliably and also learned substantial image-to-field extraction. It is not merely reproducing an empty JSON
+  template.
+
+  You can inspect the final report here: runs/qwen/20260804_114235_qwen_250_CMRS_240dpi_20260707_Qwen-Qwen3.5-2B/validation_previews/latest.html.
+
+  ## What exactly was trained?
+
+  We trained a QLoRA adapter on top of Qwen/Qwen3.5-2B.
+
+  For every training document, the model received:
+
+  1. The CMR document image.
+  2. The system prompt:
+
+     > You are an information extraction model for CMR delivery note scans. Return strict JSON only.
+
+  3. The extraction instruction.
+  4. The annotation’s complete content object as the expected assistant response.
+
+  The annotation wrapper and metadata were excluded because annotation_target_key was content.
+
+  The resulting training examples conceptually looked like:
+
+  Image + extraction instruction
+                  ↓
+  {
+    "senderInformation": {...},
+    "consigneeInformation": {...},
+    "itemList": [...],
+    ...
+  }
+
+  The assistant JSON is serialized consistently with sorted keys in src/Qwen/qwen_finetune_logic.py:636.
+
+  During training, the loss was applied only to assistant-answer tokens. Image tokens, the system prompt, and the user prompt were masked out in src/Qwen/qwen_finetune_logic.py:872.
+
+  Technically, this is next-token training with teacher forcing: while learning, Qwen sees the correct previous JSON tokens and learns to predict the next one. During preview generation, it receives no ground-
+  truth JSON and must generate the entire object autoregressively.
+
+  ## Did the schema force the output format?
+
+  No—and that makes the result more meaningful.
+
+  The JSON Schema was not inserted into the model prompt and generation was not constrained by a grammar. The schema file was only used afterward to evaluate the generated result.
+
+  Therefore, the adapter learned from the 200 training annotations:
+
+  - The complete field hierarchy and exact key names.
+  - Which fields are objects, arrays, strings, or null.
+  - A consistent JSON serialization order.
+  - When fields should normally be empty.
+  - Where values from the image belong in that hierarchy.
+  - How to transcribe document text into those values.
+  - How to generate valid JSON and stop correctly.
+
+  So “trained it to fill out the JSON structure” is broadly correct, but incomplete. It learned both the form and the extraction task.
+
+  ## Which model parameters changed?
+
+  This was the language-only QLoRA configuration:
+
+  - Base checkpoint: Qwen/Qwen3.5-2B
+  - Base weights: frozen and loaded in NF4 4-bit
+  - Vision encoder: completely frozen
+  - Embeddings and output head: frozen
+  - LoRA rank: 16
+  - LoRA alpha: 32
+  - LoRA dropout: 0.05
+  - Trainable adapter parameters: 16,819,200
+  - Adapter size: approximately 64 MiB
+
+  LoRA adapters were inserted into 186 linear modules across all 24 language-model layers, including:
+
+  - Attention projections: q_proj, k_proj, v_proj, o_proj
+  - Linear-attention projections: in_proj_a, in_proj_b, in_proj_qkv, in_proj_z, out_proj
+  - MLP projections: gate_proj, up_proj, down_proj
+
+  The complete configuration is recorded in runs/qwen/20260804_114235_qwen_250_CMRS_240dpi_20260707_Qwen-Qwen3.5-2B/training_config.json.
+
+  The vision tower’s 167,838,720 parameters did not change. Qwen’s pretrained visual encoder continued converting the document into visual features, while the language-side adapters learned how to interpret those
+  features for our extraction format.
+
+  The trained artifact is therefore not a standalone replacement model. Deployment combines:
+
+  Original Qwen3.5-2B base model
+               +
+  64 MiB trained LoRA adapter
+               =
+  Fine-tuned extraction model
+
+  ## What the results show
+
+  Training used:
+
+  - 200 training documents
+  - 49 validation documents
+  - Effective batch size 8
+  - 25 optimizer steps per epoch
+  - 10 epochs / 250 optimizer steps
+  - 2,000 total training-document presentations
+  - Approximately 3.02 hours
+
+  The preview trajectory was:
+
+   Epoch    Validation loss    Preview field F1    Value similarity
+  ━━━━━━━  ━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━
+       2             0.0518              0.7943              0.8904
+  ───────  ─────────────────  ──────────────────  ──────────────────
+       4             0.0478              0.8000              0.9015
+  ───────  ─────────────────  ──────────────────  ──────────────────
+       6             0.0523              0.8261              0.8912
+  ───────  ─────────────────  ──────────────────  ──────────────────
+       8             0.0604              0.8227              0.9076
+  ───────  ─────────────────  ──────────────────  ──────────────────
+      10             0.0672              0.8227              0.9171
+
+  Across both final preview documents:
+
+  - JSON parse rate: 100%
+  - Schema-valid rate: 100%
+  - Field precision: 82.86%
+  - Field recall: 81.69%
+  - Field F1: 82.27%
+  - Value similarity: 91.71%
+  - Correct non-empty values: 58
+  - False positives: 12
+  - False negatives: 13
+  - Hallucinated values: 2
+  - Exact documents: 0 of 2
+
+  The structural behavior is excellent: every preview at every recorded checkpoint was valid JSON and schema-valid.
+
+  ## What it still gets wrong
+
+  The remaining errors demonstrate that it is actually reading and interpreting the image, rather than merely emitting the schema. Examples include:
+
+  - License plate AB28LLF predicted as 903 AFB8 CCP.
+  - Reference Tour 03/0088228 predicted as Tour 02/0088228.
+  - Postal code 54100 predicted as 64100.
+  - Departure date placed in the arrival-date field.
+  - Missing signature address values.
+  - Hallucinating a license plate where the annotation contains null.
+  - Small transcription differences such as punctuation and spacing.
+
+  One technically “wrong” result is arguably better than the annotation:
+
+  Ground truth: OBERSCHÃ–NEGG, Deutschtland
+  Prediction:   OBERSCHÃ–NEGG, Deutschland
+
+  The evaluator correctly penalizes this because it differs from the label, but the prediction fixes the annotation’s spelling error. This is a reminder that annotation quality bounds the measured score.
+
+  ## The main caveat: overfitting
+
+  There is a noticeable overfitting pattern:
+
+  - Training loss continued falling to 0.0080.
+  - Full-validation loss was best at epoch 4: 0.0478.
+  - It then worsened to 0.0672 by epoch 10.
+  - Preview F1 peaked around epoch 6 and then plateaued.
+
+  So the last checkpoint is good, but ten epochs were probably more than necessary. Unfortunately, this run did not load or preserve the best epoch-4 checkpoint: with save_total_limit=2, only checkpoints 200 and
+  250 remain.
+
+  For the next run, I would keep the same basic setup but select and preserve the best checkpoint, probably targeting roughly 4–6 epochs. Before deciding whether vision-side LoRA is necessary, the next important
+  measurement is full autoregressive generation over all 49 validation documents. The current 0.0672 loss covers all 49, but the 0.8227 generated field F1 covers only the two fixed preview documents.
