@@ -1630,7 +1630,11 @@ def build_training_arguments(
         num_train_epochs=args.num_train_epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
-        warmup_ratio=args.warmup_ratio,
+        # Transformers 5.4 removed the deprecated ``warmup_ratio`` argument.
+        # ``warmup_steps`` accepts a float in [0, 1) with the same ratio
+        # semantics, so keep our stable experiment-facing option and translate
+        # it at the TrainingArguments boundary.
+        warmup_steps=args.warmup_ratio,
         per_device_train_batch_size=args.per_device_train_batch_size,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,

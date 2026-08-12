@@ -89,6 +89,8 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         self.assertEqual(training_args.values["eval_strategy"], "epoch")
         self.assertEqual(training_args.values["save_strategy"], "epoch")
         self.assertEqual(training_args.values["save_total_limit"], 2)
+        self.assertEqual(training_args.values["warmup_steps"], 0.03)
+        self.assertNotIn("warmup_ratio", training_args.values)
         self.assertTrue(training_args.values["load_best_model_at_end"])
         self.assertEqual(training_args.values["metric_for_best_model"], "eval_loss")
         self.assertFalse(training_args.values["greater_is_better"])
