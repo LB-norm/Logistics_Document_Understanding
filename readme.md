@@ -122,6 +122,11 @@ gradient accumulation, gradient checkpointing, language-side LoRA, and a frozen 
 encoder. The defaults are in
 [run_qwen_training.py](src/Qwen/run_qwen_training.py).
 
+Version-controlled experiment JSON files and a sequential single-GPU queue live in
+[experiments/qwen](experiments/qwen). They allow a remote machine to execute several
+configurations in fresh Python processes while sharing machine-specific dataset, run,
+and model-cache paths.
+
 Runs are written to `runs/qwen/<run-name>/`. Open
 `validation_previews/latest.html` during training to compare generated JSON with the fixed
 validation examples.

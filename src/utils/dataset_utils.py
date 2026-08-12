@@ -103,7 +103,9 @@ def candidate_annotation_stems(image_path: Path) -> list[str]:
     return stems
 
 
-def find_annotation_for_image(image_path: Path, raw_data_dir: Path | None = None) -> Path | None:
+def find_annotation_for_image(
+    image_path: Path, raw_data_dir: Path | None = None
+) -> Path | None:
     exact_match = image_path.with_suffix(".json")
     if exact_match.exists():
         return exact_match
@@ -365,14 +367,18 @@ def convert_pdf_to_pngs(
     raise RuntimeError("No PDF rendering backend is available.")
 
 
-def _pdf_png_output_path(pdf: Path, output_dir: Path, dpi: int, page_count: int, page_index: int) -> Path:
+def _pdf_png_output_path(
+    pdf: Path, output_dir: Path, dpi: int, page_count: int, page_index: int
+) -> Path:
     if page_count == 1:
         return output_dir / f"{pdf.stem}_{dpi}dpi.png"
     page_number = page_index + 1
     return output_dir / f"{pdf.stem}_page_{page_number}_{dpi}dpi.png"
 
 
-def _convert_pdf_to_pngs_with_pymupdf(pdf: Path, output_dir: Path, dpi: int) -> list[Path]:
+def _convert_pdf_to_pngs_with_pymupdf(
+    pdf: Path, output_dir: Path, dpi: int
+) -> list[Path]:
     import fitz
 
     scale = dpi / 72
@@ -435,7 +441,9 @@ def _convert_pdf_to_pngs_with_pdftoppm(
     renamed_outputs: list[Path] = []
     for rendered_output in rendered_outputs:
         page_match = re.search(r"-(\d+)$", rendered_output.stem)
-        page_number = page_match.group(1) if page_match else str(len(renamed_outputs) + 1)
+        page_number = (
+            page_match.group(1) if page_match else str(len(renamed_outputs) + 1)
+        )
         renamed_output = destination_dir / f"{pdf.stem}_page_{page_number}_{dpi}dpi.png"
         rendered_output.replace(renamed_output)
         renamed_outputs.append(renamed_output)

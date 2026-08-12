@@ -12,6 +12,8 @@ import html
 import json
 import os
 import random
+import re
+import shutil
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -38,19 +40,39 @@ DEFAULT_USER_PROMPT = (
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.utils.run_utils import RunContext, namespace_to_dict, normalize_trainer_metrics, write_json
+from src.Qwen.experiment_config import load_experiment_config
 from src.eval_suite import JsonEvaluator
+from src.utils.run_utils import RunContext, namespace_to_dict, normalize_trainer_metrics, write_json
 
 
 def parse_args(
     argv: Sequence[str] | None = None,
     defaults: Mapping[str, Any] | None = None,
 ) -> argparse.Namespace:
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", type=Path, default=None)
+    config_args, _ = config_parser.parse_known_args(raw_argv)
+    experiment_config = (
+        load_experiment_config(config_args.config)
+        if config_args.config is not None
+        else None
+    )
+
     parser = argparse.ArgumentParser(
         description=(
             "LoRA/QLoRA fine-tune a Qwen-compatible vision-language model on "
             "a local document information extraction dataset."
         )
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSON experiment configuration. Explicit command-line arguments "
+            "override values from the file."
+        ),
     )
     parser.add_argument(
         "--dataset-root",
@@ -184,8 +206,20 @@ def parse_args(
     )
     parser.set_defaults(gradient_checkpointing=True)
     parser.add_argument("--dataloader-num-workers", type=int, default=2, help="PyTorch dataloader workers.")
-    parser.add_argument("--eval-steps", type=int, default=50, help="Evaluation interval in optimizer steps.")
-    parser.add_argument("--save-steps", type=int, default=50, help="Checkpoint save interval.")
+    parser.add_argument(
+        "--eval-strategy",
+        choices=["steps", "epoch"],
+        default="steps",
+        help="Run teacher-forced validation every configured number of steps or once per epoch.",
+    )
+    parser.add_argument(
+        "--save-strategy",
+        choices=["steps", "epoch"],
+        default="steps",
+        help="Save resumable checkpoints every configured number of steps or once per epoch.",
+    )
+    parser.add_argument("--eval-steps", type=int, default=50, help="Evaluation interval when using step strategy.")
+    parser.add_argument("--save-steps", type=int, default=50, help="Checkpoint interval when using step strategy.")
     parser.add_argument("--logging-steps", type=int, default=10, help="Logging interval.")
     parser.add_argument(
         "--validation-preview-samples",
@@ -342,14 +376,23 @@ def parse_args(
         action="store_true",
         help="Parse and validate the dataset, print a summary, then exit before loading model dependencies.",
     )
-    if defaults:
+    merged_defaults: dict[str, Any] = dict(defaults or {})
+    if experiment_config is not None:
+        merged_defaults.update(experiment_config.training)
+    if merged_defaults:
         known_destinations = {action.dest for action in parser._actions}
-        unknown_defaults = sorted(set(defaults) - known_destinations)
+        unknown_defaults = sorted(set(merged_defaults) - known_destinations)
         if unknown_defaults:
             raise ValueError("Unknown Qwen training default(s): " + ", ".join(unknown_defaults))
-        parser.set_defaults(**defaults)
+        parser.set_defaults(**merged_defaults)
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
+    args.experiment_name = experiment_config.name if experiment_config else None
+    args.experiment_description = experiment_config.description if experiment_config else None
+    args.experiment_config_path = (
+        str(experiment_config.path) if experiment_config is not None else None
+    )
+    return args
 
 
 def load_runtime_dependencies(load_in_4bit: bool) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any, Any]:
@@ -1362,6 +1405,24 @@ def validate_training_options(args: argparse.Namespace) -> None:
         raise ValueError("--validation-preview-max-new-tokens must be positive.")
     if args.validation_preview_samples and args.logging_steps < 1:
         raise ValueError("--logging-steps must be positive when validation previews are enabled.")
+    if args.eval_strategy != args.save_strategy:
+        raise ValueError(
+            "--eval-strategy and --save-strategy must match so every candidate for "
+            "best-model selection has a saved checkpoint."
+        )
+    if args.eval_strategy == "steps":
+        if args.eval_steps < 1 or args.save_steps < 1:
+            raise ValueError("--eval-steps and --save-steps must be positive.")
+        if args.eval_steps != args.save_steps:
+            raise ValueError(
+                "--eval-steps and --save-steps must match so the best evaluated model "
+                "is always checkpointed."
+            )
+    if args.save_total_limit < 2:
+        raise ValueError(
+            "--save-total-limit must be at least 2 so the best and last resumable "
+            "checkpoints are both retained."
+        )
     if args.vision_tuning == "full" and args.load_in_4bit:
         raise ValueError(
             "Full vision-encoder tuning is incompatible with 4-bit QLoRA weights. "
@@ -1553,6 +1614,133 @@ def build_processor_load_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     return kwargs
 
 
+def build_training_arguments(
+    TrainingArguments: Any,
+    args: argparse.Namespace,
+    *,
+    output_dir: Path,
+    gradient_checkpointing: bool,
+    bf16: bool,
+    fp16: bool,
+    load_in_4bit: bool,
+) -> Any:
+    """Build Trainer settings with guaranteed best/last checkpoint retention."""
+    return TrainingArguments(
+        output_dir=str(output_dir),
+        num_train_epochs=args.num_train_epochs,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        warmup_ratio=args.warmup_ratio,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        eval_strategy=args.eval_strategy,
+        save_strategy=args.save_strategy,
+        eval_steps=args.eval_steps,
+        save_steps=args.save_steps,
+        logging_steps=args.logging_steps,
+        save_total_limit=args.save_total_limit,
+        dataloader_num_workers=args.dataloader_num_workers,
+        remove_unused_columns=False,
+        max_steps=args.max_steps,
+        gradient_checkpointing=gradient_checkpointing,
+        bf16=bf16,
+        fp16=fp16,
+        report_to="none",
+        do_train=True,
+        do_eval=True,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        optim=resolve_optimizer(args, load_in_4bit),
+        seed=args.seed,
+    )
+
+
+def find_last_checkpoint(output_dir: Path) -> Path:
+    """Return the highest-step resumable Trainer checkpoint."""
+    candidates: list[tuple[int, Path]] = []
+    if output_dir.is_dir():
+        for path in output_dir.iterdir():
+            match = re.fullmatch(r"checkpoint-(\d+)", path.name)
+            if path.is_dir() and match:
+                candidates.append((int(match.group(1)), path))
+    if not candidates:
+        raise RuntimeError(f"Training completed without a checkpoint in {output_dir}.")
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def copy_checkpoint_model_artifacts(source_dir: Path, destination_dir: Path) -> list[str]:
+    """Copy model/adapter files from a resumable checkpoint, excluding optimizer state."""
+    exact_names = {
+        "README.md",
+        "adapter_config.json",
+        "config.json",
+        "generation_config.json",
+    }
+    weight_prefixes = (
+        "adapter_model.",
+        "model.safetensors",
+        "pytorch_model",
+    )
+    selected = [
+        path
+        for path in source_dir.iterdir()
+        if path.is_file()
+        and (path.name in exact_names or path.name.startswith(weight_prefixes))
+    ]
+    weight_files = [path for path in selected if path.name.startswith(weight_prefixes)]
+    if not weight_files:
+        raise RuntimeError(f"Checkpoint does not contain model weights: {source_dir}")
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
+    for source_path in selected:
+        destination_path = destination_dir / source_path.name
+        shutil.copy2(source_path, destination_path)
+        copied.append(source_path.name)
+    return sorted(copied)
+
+
+def save_best_and_last_model_artifacts(
+    *,
+    trainer: Any,
+    processor: Any,
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Create stable model-only directories for the best and final checkpoints."""
+    best_checkpoint_value = trainer.state.best_model_checkpoint
+    if not best_checkpoint_value:
+        raise RuntimeError(
+            "Trainer did not identify a best checkpoint. Check evaluation and save settings."
+        )
+    best_checkpoint = Path(best_checkpoint_value).resolve()
+    if not best_checkpoint.is_dir():
+        raise RuntimeError(f"Best checkpoint was not retained: {best_checkpoint}")
+    last_checkpoint = find_last_checkpoint(output_dir).resolve()
+
+    best_model_dir = output_dir / "best_model"
+    last_model_dir = output_dir / "last_model"
+    trainer.save_model(str(best_model_dir))
+    processor.save_pretrained(str(best_model_dir))
+
+    if last_checkpoint == best_checkpoint:
+        trainer.save_model(str(last_model_dir))
+    else:
+        copy_checkpoint_model_artifacts(last_checkpoint, last_model_dir)
+    processor.save_pretrained(str(last_model_dir))
+
+    return {
+        "selection_metric": "eval_loss",
+        "greater_is_better": False,
+        "best_metric": trainer.state.best_metric,
+        "best_checkpoint": str(best_checkpoint),
+        "last_checkpoint": str(last_checkpoint),
+        "best_model_dir": str(best_model_dir.resolve()),
+        "last_model_dir": str(last_model_dir.resolve()),
+    }
+
+
 def main(
     argv: Sequence[str] | None = None,
     defaults: Mapping[str, Any] | None = None,
@@ -1630,6 +1818,15 @@ def main(
                 "interval": "training_logging_steps",
                 "max_new_tokens": args.validation_preview_max_new_tokens,
                 "output_directory": str(args.output_dir / "validation_previews"),
+            },
+            "checkpoint_policy": {
+                "retained": "best_and_last",
+                "selection_metric": "eval_loss",
+                "greater_is_better": False,
+                "eval_strategy": args.eval_strategy,
+                "save_strategy": args.save_strategy,
+                "save_total_limit": args.save_total_limit,
+                "load_best_model_at_end": True,
             },
         },
     )
@@ -1754,33 +1951,14 @@ def main(
                 )
             )
 
-        training_args = TrainingArguments(
-            output_dir=str(args.output_dir),
-            num_train_epochs=args.num_train_epochs,
-            learning_rate=args.learning_rate,
-            weight_decay=args.weight_decay,
-            warmup_ratio=args.warmup_ratio,
-            per_device_train_batch_size=args.per_device_train_batch_size,
-            per_device_eval_batch_size=args.per_device_eval_batch_size,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            eval_strategy="steps",
-            save_strategy="steps",
-            eval_steps=args.eval_steps,
-            save_steps=args.save_steps,
-            logging_steps=args.logging_steps,
-            save_total_limit=args.save_total_limit,
-            dataloader_num_workers=args.dataloader_num_workers,
-            remove_unused_columns=False,
-            max_steps=args.max_steps,
+        training_args = build_training_arguments(
+            TrainingArguments,
+            args,
+            output_dir=args.output_dir,
             gradient_checkpointing=gradient_checkpointing,
             bf16=bf16,
             fp16=fp16,
-            report_to="none",
-            do_train=True,
-            do_eval=True,
-            load_best_model_at_end=False,
-            optim=resolve_optimizer(args, load_in_4bit),
-            seed=args.seed,
+            load_in_4bit=load_in_4bit,
         )
 
         trainer = Trainer(
@@ -1795,9 +1973,17 @@ def main(
         train_result = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
         eval_metrics = trainer.evaluate()
 
+        # With load_best_model_at_end enabled, the in-memory model is now the
+        # best eval-loss checkpoint. Keep it at the run root for backwards
+        # compatibility and also materialize explicit best/last directories.
         trainer.save_model(str(args.output_dir))
         trainer.save_state()
         processor.save_pretrained(str(args.output_dir))
+        checkpoint_artifacts = save_best_and_last_model_artifacts(
+            trainer=trainer,
+            processor=processor,
+            output_dir=args.output_dir,
+        )
 
         resolved_config = namespace_to_dict(args)
         resolved_config.update(
@@ -1822,6 +2008,13 @@ def main(
                 "validation_preview_sample_ids": [
                     example.get("id") for example in validation_preview_examples
                 ],
+                "checkpoint_policy": {
+                    "retained": "best_and_last",
+                    "eval_strategy": args.eval_strategy,
+                    "save_strategy": args.save_strategy,
+                    "save_total_limit": args.save_total_limit,
+                    **checkpoint_artifacts,
+                },
             }
         )
         write_json(args.output_dir / "training_config.json", resolved_config)
@@ -1852,11 +2045,14 @@ def main(
                     "max_new_tokens": args.validation_preview_max_new_tokens,
                     "output_directory": str(args.output_dir / "validation_previews"),
                 },
+                "checkpoint_policy": resolved_config["checkpoint_policy"],
             },
             metrics=normalized_metrics,
         )
 
-        print(f"Saved Qwen LoRA adapter to {args.output_dir}")
+        print(f"Saved best Qwen LoRA adapter to {args.output_dir}")
+        print(f"Best model copy: {checkpoint_artifacts['best_model_dir']}")
+        print(f"Last model copy: {checkpoint_artifacts['last_model_dir']}")
         print(
             "Recommended next step: run inference with "
             f"`python src/Qwen/run_inference.py --adapter-path {args.output_dir}`"

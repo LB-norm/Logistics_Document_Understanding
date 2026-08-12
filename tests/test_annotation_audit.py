@@ -221,6 +221,7 @@ class AnnotationAuditTests(unittest.TestCase):
             self.assertIn("Annotation review", review_html)
             self.assertIn("Edit JSON in VS Code", review_html)
             self.assertIn("vscode://file", review_html)
+            self.assertIn(vscode_editor_url(samples[0].annotation_path), review_html)
             self.assertNotIn("<textarea", review_html)
             self.assertNotIn("Edit annotation JSON", review_html)
             self.assertIn("Mark reviewed and continue", review_html)

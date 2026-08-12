@@ -10,13 +10,16 @@ from unittest.mock import patch
 import torch
 
 from src.Qwen.qwen_finetune_logic import (
+    build_training_arguments,
     build_validation_preview_callback,
     configure_vision_tuning,
+    copy_checkpoint_model_artifacts,
     extract_assistant_target,
     find_vision_modules,
     generate_validation_preview_sample,
     parse_args,
     resolve_lora_target_modules,
+    save_best_and_last_model_artifacts,
     select_validation_preview_examples,
     select_model_loader,
     validate_training_options,
@@ -62,6 +65,113 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         self.assertEqual(args.modules_to_save, "")
         self.assertEqual(args.validation_preview_samples, 2)
         self.assertEqual(args.validation_preview_max_new_tokens, 1024)
+        self.assertEqual(args.eval_strategy, "epoch")
+        self.assertEqual(args.save_strategy, "epoch")
+        self.assertEqual(args.save_total_limit, 2)
+
+    def test_training_arguments_select_lowest_eval_loss_and_retain_two_checkpoints(self) -> None:
+        class FakeTrainingArguments:
+            def __init__(self, **kwargs):
+                self.values = kwargs
+
+        args = parse_args([], defaults=DEFAULT_TRAINING_CONFIG)
+
+        training_args = build_training_arguments(
+            FakeTrainingArguments,
+            args,
+            output_dir=Path("output"),
+            gradient_checkpointing=True,
+            bf16=True,
+            fp16=False,
+            load_in_4bit=True,
+        )
+
+        self.assertEqual(training_args.values["eval_strategy"], "epoch")
+        self.assertEqual(training_args.values["save_strategy"], "epoch")
+        self.assertEqual(training_args.values["save_total_limit"], 2)
+        self.assertTrue(training_args.values["load_best_model_at_end"])
+        self.assertEqual(training_args.values["metric_for_best_model"], "eval_loss")
+        self.assertFalse(training_args.values["greater_is_better"])
+
+    def test_checkpoint_policy_rejects_retention_below_best_and_last(self) -> None:
+        args = parse_args(["--save-total-limit", "1"])
+
+        with self.assertRaisesRegex(ValueError, "best and last"):
+            validate_training_options(args)
+
+    def test_checkpoint_policy_rejects_mismatched_step_intervals(self) -> None:
+        args = parse_args(["--eval-steps", "25", "--save-steps", "50"])
+
+        with self.assertRaisesRegex(ValueError, "must match"):
+            validate_training_options(args)
+
+    def test_best_and_last_model_artifacts_are_materialized_separately(self) -> None:
+        class FakeTrainer:
+            def __init__(self, best_checkpoint: Path) -> None:
+                self.state = SimpleNamespace(
+                    best_model_checkpoint=str(best_checkpoint),
+                    best_metric=0.125,
+                )
+
+            @staticmethod
+            def save_model(destination: str) -> None:
+                destination_path = Path(destination)
+                destination_path.mkdir(parents=True, exist_ok=True)
+                (destination_path / "adapter_config.json").write_text(
+                    '{"source":"best"}', encoding="utf-8"
+                )
+                (destination_path / "adapter_model.safetensors").write_text(
+                    "best", encoding="utf-8"
+                )
+
+        class FakeProcessor:
+            @staticmethod
+            def save_pretrained(destination: str) -> None:
+                (Path(destination) / "processor.json").write_text("{}", encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            best_checkpoint = output_dir / "checkpoint-50"
+            last_checkpoint = output_dir / "checkpoint-100"
+            for checkpoint, contents in ((best_checkpoint, "best"), (last_checkpoint, "last")):
+                checkpoint.mkdir()
+                (checkpoint / "adapter_config.json").write_text("{}", encoding="utf-8")
+                (checkpoint / "adapter_model.safetensors").write_text(
+                    contents, encoding="utf-8"
+                )
+                (checkpoint / "optimizer.pt").write_text("large", encoding="utf-8")
+
+            summary = save_best_and_last_model_artifacts(
+                trainer=FakeTrainer(best_checkpoint),
+                processor=FakeProcessor(),
+                output_dir=output_dir,
+            )
+
+            self.assertEqual(
+                (output_dir / "best_model" / "adapter_model.safetensors").read_text(
+                    encoding="utf-8"
+                ),
+                "best",
+            )
+            self.assertEqual(
+                (output_dir / "last_model" / "adapter_model.safetensors").read_text(
+                    encoding="utf-8"
+                ),
+                "last",
+            )
+            self.assertFalse((output_dir / "last_model" / "optimizer.pt").exists())
+            self.assertTrue((output_dir / "best_model" / "processor.json").is_file())
+            self.assertTrue((output_dir / "last_model" / "processor.json").is_file())
+            self.assertEqual(summary["best_metric"], 0.125)
+
+    def test_checkpoint_copy_requires_model_weights(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "checkpoint-1"
+            source.mkdir()
+            (source / "optimizer.pt").write_text("state", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "model weights"):
+                copy_checkpoint_model_artifacts(source, Path(temp_dir) / "last_model")
 
     def test_command_line_values_override_launcher_defaults(self) -> None:
         args = parse_args(

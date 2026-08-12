@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "name": "qwen35-model-size-screening",
+  "description": "Stage 1 Qwen3.5 model-size screening on one 96 GB GPU using a shared QLoRA rank-16 recipe.",
+  "experiments": [
+    {
+      "config": "qwen35_4b_qlora_r16.json",
+      "enabled": true
+    },
+    {
+      "config": "qwen35_9b_qlora_r16.json",
+      "enabled": true
+    },
+    {
+      "config": "qwen35_27b_qlora_r16.json",
+      "enabled": true
+    },
+    {
+      "config": "qwen35_35b_a3b_qlora_r16.json",
+      "enabled": true
+    }
+  ]
+}

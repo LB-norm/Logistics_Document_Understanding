@@ -8,11 +8,40 @@ The default run uses `Qwen/Qwen3.5-2B` and fits on an RTX 3080 Ti with 12 GB VRA
 - `run_qwen_training.py`: training entry point and project defaults
 - `qwen_finetune_logic.py`: dataset loading, collation, QLoRA setup, validation previews,
   and Trainer integration
-- `train_finetune.py`: compatibility wrapper for the old entry point
+- `experiment_config.py`: validation and loading for versioned experiment/queue JSON files
+- `run_qwen_experiment_queue.py`: sequential single-GPU experiment queue runner
 - `run_inference.py`: load a saved adapter and process one image
+
+Tracked experiment definitions live in `experiments/qwen/`. See its README for the
+JSON formats and queue commands.
 
 Edit `DEFAULT_TRAINING_CONFIG` in `run_qwen_training.py` for the usual experiment setup.
 Any command-line argument overrides the corresponding default.
+
+## Configured experiments and queues
+
+Run one version-controlled experiment configuration:
+
+```bash
+python src/Qwen/run_qwen_training.py \
+  --config experiments/qwen/placeholder_baseline.json \
+  --dataset-root /mnt/datasets/250_CMRS_240dpi_20260707
+```
+
+Run every enabled entry in a queue sequentially on one GPU:
+
+```bash
+python src/Qwen/run_qwen_experiment_queue.py \
+  experiments/qwen/queue.json \
+  -- \
+  --dataset-root /mnt/datasets/250_CMRS_240dpi_20260707 \
+  --runs-dir /mnt/experiments/qwen
+```
+
+Arguments after `--` are applied to every experiment and override values from its
+JSON file. Each run uses a separate Python process, releasing its model and CUDA
+state before the next experiment starts. The committed placeholder entries are
+disabled and dry-run-only until the real campaign is defined.
 
 ## Start training
 
@@ -56,7 +85,8 @@ The default configuration is:
 | LoRA targets | all matching language-side linear layers |
 | Vision encoder | frozen |
 | Epochs | 10 |
-| Evaluation, checkpoints, previews | every 50 optimizer steps |
+| Evaluation and checkpoints | once per epoch |
+| Logging and generated previews | every 50 optimizer steps |
 
 To change one value without editing the launcher:
 
@@ -142,10 +172,31 @@ Preview generation affects runtime but does not create gradients. Adjust it with
 --logging-steps 100                      generate less often
 ```
 
+## Best and last models
+
+Teacher-forced validation and resumable checkpointing run once per epoch by default.
+Trainer selects the checkpoint with the lowest `eval_loss`, reloads it after training,
+and retains it alongside the final checkpoint. `save_total_limit` must be at least 2.
+
+A successful run exposes both choices through stable model-only directories:
+
+```text
+runs/qwen/<run-name>/
+|-- best_model/     # adapter with the lowest validation loss
+|-- last_model/     # adapter at the final training step
+|-- checkpoint-*/  # best and last resumable Trainer checkpoints
+`-- ...
+```
+
+The adapter at the run root is also the best model for backwards compatibility.
+`best_model/` and `last_model/` contain processor files and can each be passed directly
+to `run_inference.py --adapter-path`. If the final checkpoint is also the best, the two
+directories intentionally contain the same learned weights.
+
 ## Run output and resume
 
 Without `--output-dir`, runs are created under `runs/qwen/`. A completed run contains the
-adapter, processor files, retained checkpoints, `training_config.json`,
+best and last adapters, processor files, retained checkpoints, `training_config.json`,
 `trainer_state.json`, and `run_metadata.json`.
 
 Resume an interrupted run with the same output directory:

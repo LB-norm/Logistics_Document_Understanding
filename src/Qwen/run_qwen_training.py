@@ -54,6 +54,10 @@ DEFAULT_TRAINING_CONFIG: dict[str, Any] = {
     "vision_module_names": "visual,vision_tower,vision_model",
     "optim": "auto",
     "attn_implementation": "sdpa",
+    # Evaluate and checkpoint once per epoch. Trainer tracks the lowest
+    # validation loss and retains both that checkpoint and the final one.
+    "eval_strategy": "epoch",
+    "save_strategy": "epoch",
     "eval_steps": 50,
     "save_steps": 50,
     "logging_steps": 50,
