@@ -4,50 +4,95 @@ import argparse
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
+from typing import Any, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.eval_suite.schema import validate_json_schema
+
 DEFAULT_SMALL_TEST_IMAGE_PATH = (
     REPO_ROOT
     / "data"
     / "small testing"
     / "3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1.jpg"
 )
-DEFAULT_SMALL_TEST_EXAMPLE_PATH = (
-    REPO_ROOT
-    / "data"
-    / "small testing"
-    / "3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1_0.json"
-)
 DEFAULT_IMAGE_PATH = DEFAULT_SMALL_TEST_IMAGE_PATH
-DEFAULT_SCHEMA_PATH = REPO_ROOT / "src" / "Donut" / "lieferschein.schema.json"
-DEFAULT_EXAMPLE_PATH = DEFAULT_SMALL_TEST_EXAMPLE_PATH
+DEFAULT_SCHEMA_PATH = REPO_ROOT / "json_schema" / "content.schema.json"
+DEFAULT_TEMPLATE_PATH = REPO_ROOT / "json_schema" / "content.empty.json"
 DEFAULT_OUTPUT_PATH = REPO_ROOT / "output" / "qwen_lieferschein_inference.json"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "output" / "qwen_lieferschein_inference"
 DEFAULT_MODEL_ID = "Qwen/Qwen3.5-2B"
-DEFAULT_ANNOTATION_TARGET_KEY = "content"
+DEFAULT_ANNOTATION_TARGET_KEY = "root"
+DEFAULT_SYSTEM_PROMPT = "You are an information extraction model for CMR delivery note scans. Return strict JSON only."
+DEFAULT_USER_PROMPT = (
+    "Extract all relevant document information into the target CMR/Lieferschein content JSON object. "
+    "Use null for missing scalar values and [] for missing arrays."
+)
 
 PRESERVE_TEMPLATE_KEYS = {"document_type", "document_language"}
 
 
-def parse_args() -> argparse.Namespace:
+@dataclass
+class InferenceRuntime:
+    torch: Any
+    image_module: Any
+    processor: Any
+    model: Any
+    model_id: str
+    processor_source: str
+
+
+@dataclass
+class ImageInferenceResult:
+    image_path: Path
+    prediction: Any
+    raw_text: str
+    cleaned_text: str
+    json_candidate: str | None
+    raw_prediction: Any
+    notes: list[str]
+    schema_errors: list[str]
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run inference with a Qwen3.5 vision-language model on a document image and normalize the "
             "response into the project JSON skeleton."
         )
     )
-    parser.add_argument(
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument(
         "--image-path",
         type=Path,
-        default=DEFAULT_IMAGE_PATH,
-        help="Path to the input document image.",
+        default=None,
+        help=(
+            "Path to one input document image. If neither image option is supplied, the bundled "
+            "small test image is used."
+        ),
+    )
+    input_group.add_argument(
+        "--image-paths",
+        type=Path,
+        nargs="+",
+        default=None,
+        metavar="IMAGE",
+        help=(
+            "Paths to multiple independent document images. The model is loaded once and one filled "
+            "JSON file is written per image."
+        ),
     )
     parser.add_argument(
         "--model-id",
-        default=DEFAULT_MODEL_ID,
-        help="Base Hugging Face model id or local checkpoint path.",
+        default=None,
+        help=(
+            "Base Hugging Face model id or local checkpoint path. When an adapter is supplied, its "
+            "adapter_config.json base_model_name_or_path is used by default."
+        ),
     )
     parser.add_argument(
         "--adapter-path",
@@ -62,18 +107,22 @@ def parse_args() -> argparse.Namespace:
         help="JSON Schema describing the target output contract.",
     )
     parser.add_argument(
+        "--template-path",
         "--example-path",
+        dest="template_path",
         type=Path,
-        default=DEFAULT_EXAMPLE_PATH,
-        help="Example annotation JSON used as the skeleton/template shape.",
+        default=DEFAULT_TEMPLATE_PATH,
+        help=(
+            "Empty JSON template defining the final output shape. --example-path is retained as an "
+            "alias for backwards compatibility."
+        ),
     )
     parser.add_argument(
         "--annotation-target-key",
         default=DEFAULT_ANNOTATION_TARGET_KEY,
         help=(
-            "Key inside the example annotation JSON to use as the output template. "
-            "The default 'content' matches Qwen fine-tuning and ignores annotation metadata. "
-            "Use 'root' for a template that is already the exact target object."
+            "Key inside the template JSON to use as the output shape. The default 'root' matches "
+            "json_schema/content.empty.json; use 'content' for a wrapped annotation template."
         ),
     )
     parser.add_argument(
@@ -81,6 +130,31 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_OUTPUT_PATH,
         help="Where to save the inference result JSON.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="Directory for filled JSON files produced by --image-paths.",
+    )
+    parser.add_argument(
+        "--diagnostics-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional diagnostics manifest path. Defaults to a sidecar JSON for one image and "
+            "inference_manifest.jsonl inside --output-dir for multiple images."
+        ),
+    )
+    parser.add_argument(
+        "--system-prompt",
+        default=DEFAULT_SYSTEM_PROMPT,
+        help="System prompt used for generation. The default matches Qwen project fine-tuning.",
+    )
+    parser.add_argument(
+        "--user-prompt",
+        default=DEFAULT_USER_PROMPT,
+        help="User prompt used for generation. The default matches Qwen project fine-tuning.",
     )
     parser.add_argument(
         "--max-new-tokens",
@@ -137,12 +211,49 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional Hugging Face cache directory.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def resolve_image_paths(args: argparse.Namespace) -> list[Path]:
+    if args.image_paths is not None:
+        return list(args.image_paths)
+    if args.image_path is not None:
+        return [args.image_path]
+    return [DEFAULT_IMAGE_PATH]
+
+
+def read_adapter_base_model(adapter_path: Path) -> str | None:
+    config_path = adapter_path / "adapter_config.json"
+    if not config_path.is_file():
+        return None
+    config = load_json(config_path)
+    model_id = (
+        config.get("base_model_name_or_path") if isinstance(config, dict) else None
+    )
+    return model_id if isinstance(model_id, str) and model_id.strip() else None
+
+
+def resolve_model_id(args: argparse.Namespace) -> str:
+    if args.model_id:
+        return str(args.model_id)
+    if args.adapter_path is not None:
+        adapter_model_id = read_adapter_base_model(args.adapter_path)
+        if adapter_model_id:
+            return adapter_model_id
+    return DEFAULT_MODEL_ID
+
+
+def resolve_processor_source(args: argparse.Namespace, model_id: str) -> str:
+    if args.adapter_path is not None:
+        processor_config = args.adapter_path / "processor_config.json"
+        if processor_config.is_file():
+            return str(args.adapter_path)
+    return model_id
 
 
 def extract_json_target(obj: Any, target_key: str) -> Any:
@@ -206,7 +317,11 @@ def load_runtime_dependencies() -> tuple[Any, Any, Any, Any, Any]:
         Image = None
 
     try:
-        from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3_5ForConditionalGeneration
+        from transformers import (
+            AutoProcessor,
+            BitsAndBytesConfig,
+            Qwen3_5ForConditionalGeneration,
+        )
     except ImportError:
         missing.append("transformers")
         AutoProcessor = None
@@ -221,7 +336,13 @@ def load_runtime_dependencies() -> tuple[Any, Any, Any, Any, Any]:
             "`pip install torch torchvision transformers pillow bitsandbytes sentencepiece`."
         )
 
-    return torch, Image, AutoProcessor, BitsAndBytesConfig, Qwen3_5ForConditionalGeneration
+    return (
+        torch,
+        Image,
+        AutoProcessor,
+        BitsAndBytesConfig,
+        Qwen3_5ForConditionalGeneration,
+    )
 
 
 def load_image(image_path: Path, image_module: Any) -> Any:
@@ -331,11 +452,15 @@ def extract_json_candidate(text: str) -> str | None:
     return None
 
 
-def fill_from_template(template: Any, prediction: Any = None, key: str | None = None) -> Any:
+def fill_from_template(
+    template: Any, prediction: Any = None, key: str | None = None
+) -> Any:
     if isinstance(template, dict):
         source = prediction if isinstance(prediction, dict) else {}
         return {
-            child_key: fill_from_template(child_template, source.get(child_key), child_key)
+            child_key: fill_from_template(
+                child_template, source.get(child_key), child_key
+            )
             for child_key, child_template in template.items()
         }
 
@@ -357,6 +482,10 @@ def fill_from_template(template: Any, prediction: Any = None, key: str | None = 
 
 
 def get_model_device(model: Any) -> Any:
+    if hasattr(model, "get_input_embeddings"):
+        embeddings = model.get_input_embeddings()
+        if embeddings is not None and hasattr(embeddings, "weight"):
+            return embeddings.weight.device
     if hasattr(model, "device"):
         return model.device
     return next(model.parameters()).device
@@ -372,70 +501,44 @@ def move_batch_to_device(batch: dict[str, Any], device: Any) -> dict[str, Any]:
     return moved
 
 
-def build_messages(schema: Any, example: Any) -> list[dict[str, Any]]:
-    instruction = (
-        "Extract the key information from this delivery note image and return exactly one JSON object. "
-        "Do not add markdown fences, comments, or explanatory text. "
-        "Use null for missing scalar values and [] for missing arrays.\n\n"
-        "JSON Schema:\n"
-        f"{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
-        "Example JSON shape:\n"
-        f"{json.dumps(example, ensure_ascii=False, indent=2)}"
-    )
+def build_messages(system_prompt: str, user_prompt: str) -> list[dict[str, Any]]:
     return [
         {
             "role": "system",
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "You are an information extraction model for German delivery notes. "
-                        "Return strict JSON only."
-                    ),
-                }
-            ],
+            "content": [{"type": "text", "text": system_prompt}],
         },
         {
             "role": "user",
             "content": [
                 {"type": "image"},
-                {"type": "text", "text": instruction},
+                {"type": "text", "text": user_prompt},
             ],
         },
     ]
 
 
-def main() -> int:
-    args = parse_args()
-
-    if not args.image_path.exists():
-        print(f"Input image not found: {args.image_path}", file=sys.stderr)
-        return 1
-
-    if not args.schema_path.exists():
-        print(f"Schema file not found: {args.schema_path}", file=sys.stderr)
-        return 1
-
-    if not args.example_path.exists():
-        print(f"Example file not found: {args.example_path}", file=sys.stderr)
-        return 1
-
-    schema = load_json(args.schema_path)
-    template = extract_json_target(load_json(args.example_path), args.annotation_target_key)
-    target_schema = select_schema_node_for_target(schema, args.annotation_target_key)
-
-    torch, image_module, AutoProcessor, BitsAndBytesConfig, Qwen3_5ForConditionalGeneration = (
-        load_runtime_dependencies()
-    )
-
+def load_inference_runtime(args: argparse.Namespace) -> InferenceRuntime:
+    (
+        torch,
+        image_module,
+        AutoProcessor,
+        BitsAndBytesConfig,
+        Qwen3_5ForConditionalGeneration,
+    ) = load_runtime_dependencies()
+    model_id = resolve_model_id(args)
+    processor_source = resolve_processor_source(args, model_id)
     load_in_4bit = resolve_load_in_4bit(args)
-    processor = AutoProcessor.from_pretrained(args.model_id, **build_processor_load_kwargs(args))
+
+    processor = AutoProcessor.from_pretrained(
+        processor_source,
+        **build_processor_load_kwargs(args),
+    )
     if processor.tokenizer.pad_token_id is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
     processor.tokenizer.padding_side = "left"
 
     model = Qwen3_5ForConditionalGeneration.from_pretrained(
-        args.model_id,
+        model_id,
         **build_model_load_kwargs(args, torch, BitsAndBytesConfig, load_in_4bit),
     )
     if args.adapter_path is not None:
@@ -449,11 +552,30 @@ def main() -> int:
         model = PeftModel.from_pretrained(model, str(args.adapter_path))
     model.eval()
 
-    image = load_image(args.image_path, image_module)
-    messages = build_messages(schema, template)
-    prompt_text = apply_chat_template_safely(processor, messages)
-    inputs = processor(text=[prompt_text], images=[image], padding=True, return_tensors="pt")
-    inputs = move_batch_to_device(inputs, get_model_device(model))
+    return InferenceRuntime(
+        torch=torch,
+        image_module=image_module,
+        processor=processor,
+        model=model,
+        model_id=model_id,
+        processor_source=processor_source,
+    )
+
+
+def generate_image_prediction(
+    runtime: InferenceRuntime,
+    image_path: Path,
+    template: Any,
+    target_schema: Any,
+    args: argparse.Namespace,
+) -> ImageInferenceResult:
+    image = load_image(image_path, runtime.image_module)
+    messages = build_messages(args.system_prompt, args.user_prompt)
+    prompt_text = apply_chat_template_safely(runtime.processor, messages)
+    inputs = runtime.processor(
+        text=[prompt_text], images=[image], padding=True, return_tensors="pt"
+    )
+    inputs = move_batch_to_device(inputs, get_model_device(runtime.model))
 
     notes: list[str] = []
     if args.adapter_path is None:
@@ -462,17 +584,18 @@ def main() -> int:
             "only be meaningful after task-specific fine-tuning."
         )
 
-    with torch.inference_mode():
-        outputs = model.generate(
+    with runtime.torch.inference_mode():
+        outputs = runtime.model.generate(
             **inputs,
             max_new_tokens=args.max_new_tokens,
             do_sample=False,
             use_cache=True,
         )
 
+    sequences = outputs.sequences if hasattr(outputs, "sequences") else outputs
     input_length = inputs["input_ids"].shape[1]
-    generated_ids = outputs[:, input_length:]
-    raw_text = processor.batch_decode(
+    generated_ids = sequences[:, input_length:]
+    raw_text = runtime.processor.batch_decode(
         generated_ids,
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
@@ -488,41 +611,241 @@ def main() -> int:
             parsed_prediction = json.loads(json_candidate)
         except json.JSONDecodeError as exc:
             notes.append(f"Failed to parse generated JSON: {exc}")
+    if (
+        parsed_prediction is not None
+        and isinstance(template, dict)
+        and not isinstance(parsed_prediction, dict)
+    ):
+        notes.append(
+            "The model response JSON is not an object, so it cannot fill the object template."
+        )
+    if (
+        isinstance(template, dict)
+        and template
+        and isinstance(parsed_prediction, dict)
+        and not set(template).intersection(parsed_prediction)
+    ):
+        notes.append(
+            "The model response object does not contain any top-level template fields."
+        )
 
-    guided_prediction = fill_from_template(template, parsed_prediction)
+    prediction = fill_from_template(template, parsed_prediction)
+    schema_errors = validate_json_schema(prediction, target_schema)
+    if schema_errors:
+        notes.append(
+            f"The filled prediction has {len(schema_errors)} JSON Schema error(s)."
+        )
 
-    result = {
+    return ImageInferenceResult(
+        image_path=image_path,
+        prediction=prediction,
+        raw_text=raw_text,
+        cleaned_text=cleaned_text,
+        json_candidate=json_candidate,
+        raw_prediction=parsed_prediction,
+        notes=notes,
+        schema_errors=schema_errors,
+    )
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(value, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+
+def resolve_prediction_paths(
+    args: argparse.Namespace, image_paths: list[Path]
+) -> list[Path]:
+    if len(image_paths) == 1:
+        return [args.output_path]
+
+    prediction_paths = [
+        args.output_dir / f"{image_path.stem}.json" for image_path in image_paths
+    ]
+    duplicates = sorted(
+        path.name for path in set(prediction_paths) if prediction_paths.count(path) > 1
+    )
+    if duplicates:
+        duplicate_csv = ", ".join(duplicates)
+        raise ValueError(
+            "Multiple input images would overwrite the same prediction file: "
+            f"{duplicate_csv}. Use images with unique stems."
+        )
+    return prediction_paths
+
+
+def default_diagnostics_path(args: argparse.Namespace, image_count: int) -> Path:
+    if args.diagnostics_path is not None:
+        return args.diagnostics_path
+    if image_count == 1:
+        return args.output_path.with_suffix(
+            args.output_path.suffix + ".diagnostics.json"
+        )
+    return args.output_dir / "inference_manifest.jsonl"
+
+
+def result_status(result: ImageInferenceResult, template: Any) -> str:
+    if result.raw_prediction is None:
+        return "parse_error"
+    if isinstance(template, dict) and not isinstance(result.raw_prediction, dict):
+        return "parse_error"
+    if (
+        isinstance(template, dict)
+        and template
+        and isinstance(result.raw_prediction, dict)
+        and not set(template).intersection(result.raw_prediction)
+    ):
+        return "template_error"
+    if result.schema_errors:
+        return "schema_error"
+    return "ok"
+
+
+def build_diagnostic_record(
+    *,
+    args: argparse.Namespace,
+    runtime: InferenceRuntime,
+    output_path: Path,
+    result: ImageInferenceResult,
+    template: Any,
+) -> dict[str, Any]:
+    return {
+        "status": result_status(result, template),
+        "image_path": str(result.image_path),
+        "prediction_path": str(output_path),
         "model": {
-            "model_id": args.model_id,
-            "adapter_path": str(args.adapter_path) if args.adapter_path is not None else None,
+            "model_id": runtime.model_id,
+            "adapter_path": (
+                str(args.adapter_path) if args.adapter_path is not None else None
+            ),
+            "processor_source": runtime.processor_source,
             "max_new_tokens": args.max_new_tokens,
-            "load_in_4bit": load_in_4bit,
+            "load_in_4bit": resolve_load_in_4bit(args),
         },
-        "input": {
-            "image_path": str(args.image_path),
-            "schema_path": str(args.schema_path),
-            "example_path": str(args.example_path),
-            "annotation_target_key": args.annotation_target_key,
-        },
-        "guidance": {
-            "schema_title": schema.get("title"),
-            "required_fields": target_schema.get("required", []) if isinstance(target_schema, dict) else [],
-        },
-        "notes": notes,
-        "generated": {
-            "raw_text": raw_text,
-            "cleaned_text": cleaned_text,
-            "json_candidate": json_candidate,
-            "raw_prediction": parsed_prediction,
-            "guided_prediction": guided_prediction,
-        },
+        "raw_text": result.raw_text,
+        "cleaned_text": result.cleaned_text,
+        "json_candidate": result.json_candidate,
+        "raw_prediction": result.raw_prediction,
+        "schema_errors": result.schema_errors,
+        "notes": result.notes,
     }
 
-    args.output_path.parent.mkdir(parents=True, exist_ok=True)
-    with args.output_path.open("w", encoding="utf-8") as handle:
-        json.dump(result, handle, ensure_ascii=False, indent=2)
 
-    print(f"Saved Qwen inference result to {args.output_path}")
+def write_diagnostics(
+    path: Path, records: list[dict[str, Any]], multiple: bool
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not multiple:
+        write_json(path, records[0])
+        return
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False))
+            handle.write("\n")
+
+
+def run_inference_on_images(
+    *,
+    args: argparse.Namespace,
+    runtime: InferenceRuntime,
+    image_paths: list[Path],
+    prediction_paths: list[Path],
+    template: Any,
+    target_schema: Any,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for image_path, prediction_path in zip(image_paths, prediction_paths, strict=True):
+        try:
+            result = generate_image_prediction(
+                runtime, image_path, template, target_schema, args
+            )
+            write_json(prediction_path, result.prediction)
+            record = build_diagnostic_record(
+                args=args,
+                runtime=runtime,
+                output_path=prediction_path,
+                result=result,
+                template=template,
+            )
+            print(f"Saved filled Qwen prediction to {prediction_path}")
+        except Exception as exc:
+            record = {
+                "status": "inference_error",
+                "image_path": str(image_path),
+                "prediction_path": None,
+                "model": {
+                    "model_id": runtime.model_id,
+                    "adapter_path": (
+                        str(args.adapter_path)
+                        if args.adapter_path is not None
+                        else None
+                    ),
+                    "processor_source": runtime.processor_source,
+                },
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            print(f"Inference failed for {image_path}: {exc}", file=sys.stderr)
+        records.append(record)
+    return records
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    image_paths = resolve_image_paths(args)
+
+    missing_images = [path for path in image_paths if not path.is_file()]
+    if missing_images:
+        for image_path in missing_images:
+            print(f"Input image not found: {image_path}", file=sys.stderr)
+        return 1
+    if not args.schema_path.is_file():
+        print(f"Schema file not found: {args.schema_path}", file=sys.stderr)
+        return 1
+    if not args.template_path.is_file():
+        print(f"Template file not found: {args.template_path}", file=sys.stderr)
+        return 1
+    if args.adapter_path is not None and not args.adapter_path.is_dir():
+        print(f"Adapter directory not found: {args.adapter_path}", file=sys.stderr)
+        return 1
+
+    schema = load_json(args.schema_path)
+    template = extract_json_target(
+        load_json(args.template_path), args.annotation_target_key
+    )
+    target_schema = select_schema_node_for_target(schema, args.annotation_target_key)
+    template_schema_errors = validate_json_schema(template, target_schema)
+    if template_schema_errors:
+        print(
+            f"Template does not satisfy the selected JSON Schema ({len(template_schema_errors)} error(s)):",
+            file=sys.stderr,
+        )
+        for error in template_schema_errors:
+            print(f"- {error}", file=sys.stderr)
+        return 1
+    prediction_paths = resolve_prediction_paths(args, image_paths)
+    diagnostics_path = default_diagnostics_path(args, len(image_paths))
+
+    runtime = load_inference_runtime(args)
+    records = run_inference_on_images(
+        args=args,
+        runtime=runtime,
+        image_paths=image_paths,
+        prediction_paths=prediction_paths,
+        template=template,
+        target_schema=target_schema,
+    )
+    write_diagnostics(diagnostics_path, records, multiple=len(image_paths) > 1)
+    print(f"Saved inference diagnostics to {diagnostics_path}")
+
+    failed = sum(record["status"] != "ok" for record in records)
+    if failed:
+        print(
+            f"Inference completed with {failed} unsuccessful result(s).",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

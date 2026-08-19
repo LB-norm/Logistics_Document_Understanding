@@ -209,15 +209,41 @@ Resume an interrupted run with the same output directory:
 
 ## Inference
 
-Run one image with a saved adapter:
+Run one image with a saved adapter. The adapter metadata selects the matching base
+model automatically, and the saved adapter processor is reused when available:
 
 ```powershell
 .\.venv\Scripts\python.exe src\Qwen\run_inference.py `
-  --adapter-path runs\qwen\<run-name> `
-  --image-path path\to\document.png
+  --adapter-path runs\qwen\<run-name>\best_model `
+  --image-path path\to\document.png `
+  --output-path output\qwen\document.json
 ```
 
-Use `--help` to list the remaining inference options.
+The output file is the final template-filled content JSON. Raw model text, parse
+errors, schema errors, and model provenance are stored separately in
+`document.json.diagnostics.json`.
+
+Use `--image-paths` to process several independent images in one invocation. The
+base model and adapter are loaded only once, and each image receives its own final
+JSON file:
+
+```powershell
+.\.venv\Scripts\python.exe src\Qwen\run_inference.py `
+  --adapter-path runs\qwen-screening\qwen35-4b-qlora-r16-screening\best_model `
+  --image-paths path\to\first.png path\to\second.png path\to\third.png `
+  --output-dir output\qwen35-4b-best\validation
+```
+
+The multiple-image output directory contains one `<image-stem>.json` prediction per
+input plus `inference_manifest.jsonl` with diagnostics. Input image stems must be
+unique to prevent accidental output overwrites. `--template-path` and
+`--schema-path` can select another output contract; their defaults are
+`json_schema/content.empty.json` and `json_schema/content.schema.json`.
+
+Inference uses the same default system and user prompts as project fine-tuning.
+They can be overridden with `--system-prompt` and `--user-prompt` for checkpoints
+trained with a different prompt contract. Use `--help` to list the remaining
+options.
 
 ## Dataset formats
 
