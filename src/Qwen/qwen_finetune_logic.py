@@ -233,7 +233,7 @@ def parse_args(
     parser.add_argument(
         "--validation-preview-max-new-tokens",
         type=int,
-        default=1024,
+        default=2048,
         help=(
             "Maximum number of answer tokens generated for each intermediate validation "
             "preview. This is separate from --max-length, which controls training inputs."

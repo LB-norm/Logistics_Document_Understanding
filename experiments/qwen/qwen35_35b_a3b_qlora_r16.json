@@ -6,7 +6,6 @@
     "model_id": "Qwen/Qwen3.5-35B-A3B",
     "model_class": "auto",
     "max_pixels": 1048576,
-    "max_length": 2048,
     "load_in_4bit": true,
     "compute_dtype": "bfloat16",
     "bnb_4bit_quant_type": "nf4",
@@ -30,7 +29,7 @@
     "save_total_limit": 2,
     "logging_steps": 50,
     "validation_preview_samples": 2,
-    "validation_preview_max_new_tokens": 1024,
+    "validation_preview_max_new_tokens": 2048,
     "dataloader_num_workers": 0,
     "seed": 42
   }

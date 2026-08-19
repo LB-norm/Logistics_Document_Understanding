@@ -78,7 +78,7 @@ The default configuration is:
 | Quantization | NF4 4-bit with double quantization |
 | Compute dtype | BF16 |
 | Image budget | 1,048,576 pixels |
-| Maximum training sequence | 2,048 tokens |
+| Maximum training sequence | Unset (no truncation) |
 | Batch size | 1 |
 | Gradient accumulation | 8 |
 | LoRA | rank 16, alpha 32, dropout 0.05 |
@@ -142,9 +142,11 @@ machine, select another compatible checkpoint and adjust the memory settings:
   --run-name qwen35-9b-language-qlora
 ```
 
-The main memory controls are `--max-pixels`, `--max-length`, batch size, LoRA rank,
-quantization, and gradient checkpointing. Keep `modules_to_save` empty unless an additional
-non-LoRA module must be trained and stored.
+The main memory controls are `--max-pixels`, batch size, LoRA rank, quantization, and
+gradient checkpointing. Training leaves `--max-length` unset so the processor does not
+truncate the image, prompt, or target JSON. Only set it after checking that every complete
+processed sequence, including the assistant end token, fits below the chosen limit. Keep
+`modules_to_save` empty unless an additional non-LoRA module must be trained and stored.
 
 ## Validation during training
 
@@ -168,7 +170,7 @@ Preview generation affects runtime but does not create gradients. Adjust it with
 
 ```text
 --validation-preview-samples 0           disable previews
---validation-preview-max-new-tokens 512 shorten generated answers
+--validation-preview-max-new-tokens 2048 default generation budget
 --logging-steps 100                      generate less often
 ```
 
@@ -242,8 +244,9 @@ unique to prevent accidental output overwrites. `--template-path` and
 
 Inference uses the same default system and user prompts as project fine-tuning.
 They can be overridden with `--system-prompt` and `--user-prompt` for checkpoints
-trained with a different prompt contract. Use `--help` to list the remaining
-options.
+trained with a different prompt contract. The default `--max-new-tokens 2048`
+accommodates the longest JSON targets in the current dataset. Use `--help` to list
+the remaining options.
 
 ## Dataset formats
 

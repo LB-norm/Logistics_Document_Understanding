@@ -31,7 +31,9 @@ DEFAULT_TRAINING_CONFIG: dict[str, Any] = {
     # 1,048,576 pixels is roughly a 1024 x 1024 image budget. The processor
     # preserves aspect ratio, so portrait documents do not become square.
     "max_pixels": 1024 * 1024,
-    "max_length": 2048,
+    # Do not truncate the combined image, prompt, and assistant target. A fixed
+    # 2048-token limit silently removed the end of longer target JSON objects.
+    "max_length": None,
     "load_in_4bit": True,
     "compute_dtype": "bfloat16",
     "bnb_4bit_quant_type": "nf4",
@@ -64,7 +66,7 @@ DEFAULT_TRAINING_CONFIG: dict[str, Any] = {
     # Autoregressively generate the same two validation documents whenever a
     # training loss is logged. Set samples to 0 when profiling raw throughput.
     "validation_preview_samples": 2,
-    "validation_preview_max_new_tokens": 1024,
+    "validation_preview_max_new_tokens": 2048,
     "save_total_limit": 2,
     "dataloader_num_workers": 0,
     "seed": 42,

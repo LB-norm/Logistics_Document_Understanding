@@ -27,6 +27,7 @@ DEFAULT_OUTPUT_PATH = REPO_ROOT / "output" / "qwen_lieferschein_inference.json"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "output" / "qwen_lieferschein_inference"
 DEFAULT_MODEL_ID = "Qwen/Qwen3.5-2B"
 DEFAULT_ANNOTATION_TARGET_KEY = "root"
+DEFAULT_MAX_NEW_TOKENS = 2048
 DEFAULT_SYSTEM_PROMPT = "You are an information extraction model for CMR delivery note scans. Return strict JSON only."
 DEFAULT_USER_PROMPT = (
     "Extract all relevant document information into the target CMR/Lieferschein content JSON object. "
@@ -159,7 +160,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-new-tokens",
         type=int,
-        default=768,
+        default=DEFAULT_MAX_NEW_TOKENS,
         help="Upper bound for generated output tokens.",
     )
     parser.add_argument(

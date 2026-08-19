@@ -1,12 +1,11 @@
 {
   "format_version": 1,
-  "name": "qwen35-27b-qlora-r16-screening",
-  "description": "Stage 1 model-size screening: Qwen3.5 27B with the shared frozen-vision QLoRA rank-16 recipe.",
+  "name": "qwen35-27b-qlora-r16-screening-untruncated",
+  "description": "Model-size screening rerun: Qwen3.5 27B with the original frozen-vision QLoRA rank-16 recipe and no training sequence truncation.",
   "training": {
     "model_id": "Qwen/Qwen3.5-27B",
     "model_class": "auto",
     "max_pixels": 1048576,
-    "max_length": 2048,
     "load_in_4bit": true,
     "compute_dtype": "bfloat16",
     "bnb_4bit_quant_type": "nf4",
@@ -30,7 +29,7 @@
     "save_total_limit": 2,
     "logging_steps": 50,
     "validation_preview_samples": 2,
-    "validation_preview_max_new_tokens": 1024,
+    "validation_preview_max_new_tokens": 2048,
     "dataloader_num_workers": 0,
     "seed": 42
   }

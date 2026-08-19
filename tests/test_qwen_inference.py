@@ -18,6 +18,11 @@ from src.Qwen.run_inference import (
 
 
 class QwenInferenceTests(unittest.TestCase):
+    def test_default_generation_budget_handles_long_json_targets(self) -> None:
+        args = parse_args([])
+
+        self.assertEqual(args.max_new_tokens, 2048)
+
     def test_filled_prediction_keeps_template_shape(self) -> None:
         template = {
             "sender": {"name": None, "city": None},

@@ -4,9 +4,11 @@ This directory stores portable, version-controlled Qwen experiment definitions.
 The training code remains in `src/Qwen`; these JSON files describe only what is
 different for a particular run.
 
-The current queue is the first model-size screening campaign. It trains the official
-Qwen3.5 4B, 9B, 27B, and 35B-A3B checkpoints sequentially with the same frozen-vision
-QLoRA rank-16 recipe. These are real training runs and are enabled in `queue.json`.
+The current queue reruns the model-size screening campaign for the official Qwen3.5
+4B, 9B, and 27B checkpoints sequentially with the same frozen-vision QLoRA rank-16
+recipe. Training sequence truncation is disabled. The 35B-A3B configuration remains
+available for reference but is excluded from `queue.json` because it exceeded the
+available GPU memory.
 
 ## Run one experiment
 
@@ -55,15 +57,16 @@ run-output, and model-cache paths passed to the queue command.
 
 ## Current model-size screening
 
-The four configurations differ only in their `model_id`, experiment name, and
-description. Their controlled training recipe is:
+The three queued configurations differ only in their `model_id`, experiment name,
+and description. Their controlled training recipe is:
 
 - 4-bit NF4 QLoRA with BF16 compute
 - frozen vision encoder and language-side `all-linear` LoRA targets
 - LoRA rank 16, alpha 32, and dropout 0.05
 - physical batch size 1 with 8 gradient accumulation steps
 - five epochs at learning rate `1e-4`
-- fixed 1024 x 1024 pixel budget, 2048-token limit, and seed 42
+- fixed 1024 x 1024 pixel budget, untruncated training sequences, and seed 42
+- 2048-token generation budget for validation previews
 - evaluation and checkpointing after every epoch, retaining the best and last model
 
 ## Remote launch checklist
