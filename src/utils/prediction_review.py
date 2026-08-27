@@ -1,16 +1,18 @@
 """Build a local HTML workspace for reviewing prediction/annotation differences.
 
 The generated page has no runtime dependencies.  It can be opened directly from
-disk, keeps review decisions in browser local storage, and exports those decisions
-as CSV.  Annotation edits themselves are deliberately delegated to the editor so
-that the original JSON formatting and metadata are preserved.
+disk, keeps review progress in browser local storage, and writes an XLSX review log.
+Annotation edits themselves are deliberately delegated to the editor so that the
+original JSON formatting and metadata are preserved.
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,8 +32,10 @@ DATASET_NAME = "250_CMRS_240dpi_20260707"
 DEFAULT_DATASET_ROOT = REPO_ROOT / "data" / "datasets" / DATASET_NAME / DATASET_NAME
 DEFAULT_PREDICTION_ROOT = REPO_ROOT / "output" / "qwen" / "qwen35-9b-best"
 DEFAULT_OUTPUT_PATH = DEFAULT_PREDICTION_ROOT / "review.html"
+DEFAULT_TEMPLATE_PATH = REPO_ROOT / "json_schema" / "content.empty.json"
 SPLITS = ("train", "val")
 MISSING = object()
+PATH_TOKEN_PATTERN = re.compile(r"([^.\[\]]+)|\[(\d+)\]")
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="HTML output path (default: <prediction-root>/review.html)",
     )
+    parser.add_argument(
+        "--template-path",
+        type=Path,
+        default=DEFAULT_TEMPLATE_PATH,
+        help=(
+            "Canonical empty JSON template defining field order "
+            f"(default: {DEFAULT_TEMPLATE_PATH})"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -126,11 +139,37 @@ def _display_value(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _template_order_key(path: str, template: Any) -> tuple[int, ...]:
+    """Return a structural sort key based on the canonical JSON template."""
+    key: list[int] = []
+    node = template
+    for match in PATH_TOKEN_PATTERN.finditer(path):
+        field, raw_index = match.groups()
+        if raw_index is not None:
+            key.append(int(raw_index))
+            node = node[0] if isinstance(node, list) and node else MISSING
+            continue
+
+        if isinstance(node, dict):
+            fields = tuple(node)
+            try:
+                rank = fields.index(field)
+            except ValueError:
+                rank = len(fields)
+            node = node.get(field, MISSING)
+        else:
+            rank = 0
+            node = MISSING
+        key.append(rank)
+    return tuple(key)
+
+
 def compare_documents(
     annotation: dict[str, Any],
     prediction: dict[str, Any],
     *,
     normalization: NormalizationConfig | None = None,
+    field_order_template: dict[str, Any] | None = None,
 ) -> tuple[Difference, ...]:
     """Return meaningful leaf differences in stable JSON-path order."""
     config = normalization or NormalizationConfig()
@@ -138,7 +177,16 @@ def compare_documents(
     predicted = _flatten_scalars(prediction)
     differences: list[Difference] = []
 
-    for path in sorted(expected.keys() | predicted.keys()):
+    paths = [*expected, *(path for path in predicted if path not in expected)]
+    if field_order_template is not None:
+        encounter_order = {path: index for index, path in enumerate(paths)}
+        paths.sort(
+            key=lambda path: (
+                _template_order_key(path, field_order_template),
+                encounter_order[path],
+            )
+        )
+    for path in paths:
         left = expected.get(path, MISSING)
         right = predicted.get(path, MISSING)
         left_empty = left is MISSING or is_empty_value(left, config)
@@ -200,11 +248,22 @@ def _load_metadata(dataset_root: Path, split: str) -> tuple[dict[str, dict[str, 
     return by_image_stem, warnings
 
 
-def load_review_data(prediction_root: Path, dataset_root: Path) -> ReviewData:
+def load_review_data(
+    prediction_root: Path,
+    dataset_root: Path,
+    template_path: Path = DEFAULT_TEMPLATE_PATH,
+) -> ReviewData:
     samples: list[ReviewSample] = []
     warnings: list[str] = []
     prediction_count = 0
     exact_count = 0
+    try:
+        field_order_template = json.loads(template_path.read_text(encoding="utf-8"))
+        if not isinstance(field_order_template, dict):
+            raise TypeError("template root must be a JSON object")
+    except (OSError, json.JSONDecodeError, TypeError) as error:
+        field_order_template = None
+        warnings.append(f"Could not load field-order template {template_path}: {error}")
 
     for split in SPLITS:
         metadata, metadata_warnings = _load_metadata(dataset_root, split)
@@ -238,7 +297,11 @@ def load_review_data(prediction_root: Path, dataset_root: Path) -> ReviewData:
                 warnings.append(f"Could not load {prediction_path}: {error}")
                 continue
 
-            differences = compare_documents(annotation, prediction)
+            differences = compare_documents(
+                annotation,
+                prediction,
+                field_order_template=field_order_template,
+            )
             if not differences:
                 exact_count += 1
                 continue
@@ -277,7 +340,88 @@ def _json_for_script(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
 
 
-def write_review_html(data: ReviewData, output_path: Path, dataset_root: Path) -> None:
+def _inline_diff_segments(
+    annotation: str,
+    prediction: str,
+    difference_kind: str | None = None,
+) -> list[dict[str, str]]:
+    """Build a compact character diff for the review page.
+
+    Replacements are emitted as adjacent annotation-only and prediction-only
+    segments, allowing the HTML to distinguish each side with its own color.
+    """
+    if difference_kind in {"annotation_only", "prediction_only"}:
+        return [
+            {"kind": "annotation_only", "text": annotation},
+            {"kind": "prediction_only", "text": prediction},
+        ]
+
+    # Pull out shared boundaries before SequenceMatcher sees the remaining text.
+    # This keeps repeated characters aligned intuitively: 44009 -> 44099 is
+    # shown as 440 [0 -> 9] 9, rather than as a deletion plus a trailing insert.
+    prefix_length = 0
+    max_prefix = min(len(annotation), len(prediction))
+    while (
+        prefix_length < max_prefix
+        and annotation[prefix_length] == prediction[prefix_length]
+    ):
+        prefix_length += 1
+
+    suffix_length = 0
+    max_suffix = min(
+        len(annotation) - prefix_length,
+        len(prediction) - prefix_length,
+    )
+    while (
+        suffix_length < max_suffix
+        and annotation[len(annotation) - suffix_length - 1]
+        == prediction[len(prediction) - suffix_length - 1]
+    ):
+        suffix_length += 1
+
+    left_end = len(annotation) - suffix_length if suffix_length else len(annotation)
+    right_end = len(prediction) - suffix_length if suffix_length else len(prediction)
+    left_middle = annotation[prefix_length:left_end]
+    right_middle = prediction[prefix_length:right_end]
+
+    segments: list[dict[str, str]] = []
+    if prefix_length:
+        segments.append({"kind": "equal", "text": annotation[:prefix_length]})
+    matcher = difflib.SequenceMatcher(
+        None,
+        left_middle,
+        right_middle,
+        autojunk=False,
+    )
+    for operation, left_start, left_end, right_start, right_end in matcher.get_opcodes():
+        if operation == "equal":
+            segments.append({"kind": "equal", "text": left_middle[left_start:left_end]})
+        else:
+            if operation in {"delete", "replace"}:
+                segments.append(
+                    {
+                        "kind": "annotation_only",
+                        "text": left_middle[left_start:left_end],
+                    }
+                )
+            if operation in {"insert", "replace"}:
+                segments.append(
+                    {
+                        "kind": "prediction_only",
+                        "text": right_middle[right_start:right_end],
+                    }
+                )
+    if suffix_length:
+        segments.append({"kind": "equal", "text": annotation[-suffix_length:]})
+    return segments
+
+
+def write_review_html(
+    data: ReviewData,
+    output_path: Path,
+    dataset_root: Path,
+    prediction_root: Path,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     serializable_samples = []
     for sample in data.samples:
@@ -287,16 +431,30 @@ def write_review_html(data: ReviewData, output_path: Path, dataset_root: Path) -
                 "name": sample.prediction_path.stem,
                 "split": sample.split,
                 "image": _relative_url(sample.image_path, output_path.parent),
+                "annotation": _relative_url(sample.annotation_path, output_path.parent),
+                "image_name": sample.image_path.name,
+                "annotation_name": sample.annotation_path.name,
                 "annotation_path": _display_path(sample.annotation_path),
                 "prediction_path": _display_path(sample.prediction_path),
                 "annotation_editor_url": _vscode_url(sample.annotation_path),
                 "prediction_editor_url": _vscode_url(sample.prediction_path),
-                "differences": [asdict(difference) for difference in sample.differences],
+                "differences": [
+                    {
+                        **asdict(difference),
+                        "segments": _inline_diff_segments(
+                            difference.annotation,
+                            difference.prediction,
+                            difference.kind,
+                        ),
+                    }
+                    for difference in sample.differences
+                ],
             }
         )
     payload = {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "dataset": str(dataset_root.resolve()),
+        "prediction_root": str(prediction_root.resolve()),
         "prediction_count": data.prediction_count,
         "exact_count": data.exact_count,
         "samples": serializable_samples,
@@ -310,12 +468,13 @@ def build_review(
     prediction_root: Path = DEFAULT_PREDICTION_ROOT,
     dataset_root: Path = DEFAULT_DATASET_ROOT,
     output_path: Path | None = None,
+    template_path: Path = DEFAULT_TEMPLATE_PATH,
 ) -> tuple[ReviewData, Path]:
     prediction_root = prediction_root.resolve()
     dataset_root = dataset_root.resolve()
     output_path = (output_path or prediction_root / "review.html").resolve()
-    data = load_review_data(prediction_root, dataset_root)
-    write_review_html(data, output_path, dataset_root)
+    data = load_review_data(prediction_root, dataset_root, template_path.resolve())
+    write_review_html(data, output_path, dataset_root, prediction_root)
     return data, output_path
 
 
@@ -325,6 +484,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prediction_root=args.prediction_root,
         dataset_root=args.dataset_root,
         output_path=args.output,
+        template_path=args.template_path,
     )
     difference_count = sum(len(sample.differences) for sample in data.samples)
     print(f"Review page: {output_path}")
@@ -345,49 +505,48 @@ HTML_TEMPLATE = r'''<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Qwen prediction review</title>
   <style>
-    :root{color-scheme:light;--ink:#172026;--muted:#66737b;--line:#d7dfe3;--paper:#fff;--bg:#f2f5f6;--blue:#1769aa;--red:#b42318;--red-bg:#fff1f0;--amber:#a15c00;--amber-bg:#fff8e8;--green:#087443;--soft:#eef3f5}
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif} a{color:var(--blue)}
-    header{position:sticky;top:0;z-index:5;padding:13px 22px;background:rgba(255,255,255,.97);border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
-    h1{font-size:21px;margin:0 0 2px} h2{font-size:17px;margin:0} .muted{color:var(--muted)} .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
-    input,select,button{font:inherit;min-height:37px;padding:7px 10px;border:1px solid #abb8bf;border-radius:6px;background:white} button{cursor:pointer} button:hover{background:var(--soft)} input:focus,select:focus,button:focus{outline:2px solid var(--blue);outline-offset:1px} #search{min-width:280px;flex:1}
-    main{max-width:1640px;margin:auto;padding:17px 22px 60px}.stats{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:8px;margin-bottom:12px}.stat{padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:white}.stat b{display:block;font-size:20px}
-    .nav{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px 0}.nav-actions,.links,.review-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.card{overflow:hidden;background:white;border:1px solid var(--line);border-radius:8px}.head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 15px;border-bottom:1px solid var(--line)}.head>div:first-child{min-width:0;overflow-wrap:anywhere}.count{flex:none;padding:4px 9px;color:white;background:var(--red);border-radius:999px;font-weight:700}
-    .layout{display:grid;grid-template-columns:minmax(360px,42%) minmax(0,1fr);min-height:560px}.scan{padding:12px;background:#e7ecef;border-right:1px solid var(--line)}.scan img{position:sticky;top:150px;width:100%;max-height:calc(100vh - 195px);object-fit:contain;background:white}.links{margin-top:9px}.details{min-width:0;padding:13px 15px 20px;overflow:auto}
-    table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{padding:7px 8px;border:1px solid var(--line);text-align:left;vertical-align:top;overflow-wrap:anywhere}th{position:sticky;top:0;background:var(--soft);font-size:12px}.field{width:29%}.decision{width:155px}.value{white-space:pre-wrap}.different{background:var(--red-bg)}.formatting{background:var(--amber-bg)}.kind{display:inline-block;margin-top:4px;padding:2px 6px;border-radius:999px;background:#fbd5d2;color:#7a271a;font-size:11px}.kind.formatting_only{background:#fde9b4;color:#784c00}.similarity{font-size:11px;color:var(--muted);margin-top:3px}
-    .review-actions{justify-content:space-between;margin-top:13px;padding-top:13px;border-top:1px solid var(--line)}.done{color:var(--green);font-weight:700}.empty{padding:55px;text-align:center;color:var(--muted)}details.warning{margin-bottom:11px;padding:10px 14px;background:white;border:1px solid var(--line);border-radius:7px}summary{cursor:pointer;font-weight:650}
-    @media(max-width:900px){header{position:static}main{padding:12px}.stats{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}.scan{border-right:0;border-bottom:1px solid var(--line)}.scan img{position:static;max-height:75vh}#search{min-width:100%}.decision{width:125px}.field{width:24%}}
+    :root{color-scheme:light;--ink:#172026;--muted:#66737b;--line:#d7dfe3;--bg:#f2f5f6;--blue:#1769aa;--red:#b42318;--red-bg:#fff1f0;--amber-bg:#fff8e8;--green:#087443;--soft:#eef3f5}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue)}
+    header{padding:14px 22px;background:#fff;border-bottom:1px solid var(--line)}h1{font-size:21px;margin:0 0 3px}h2{font-size:17px;margin:0}.muted{color:var(--muted)}
+    main{max-width:1640px;margin:auto;padding:17px 22px 60px}.progress{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px}.card{overflow:hidden;background:#fff;border:1px solid var(--line);border-radius:8px}.head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 15px;border-bottom:1px solid var(--line)}.head>div:first-child{min-width:0;overflow-wrap:anywhere}.count{flex:none;padding:4px 9px;color:#fff;background:var(--red);border-radius:999px;font-weight:700}
+    .layout{display:grid;grid-template-columns:minmax(300px,34%) minmax(0,1fr);min-height:560px}.scan{padding:12px;background:#e7ecef;border-right:1px solid var(--line)}.scan img{position:sticky;top:12px;width:100%;max-height:calc(100vh - 55px);object-fit:contain;background:#fff}.links{display:flex;gap:12px;flex-wrap:wrap;margin-top:9px}.details{min-width:0;padding:13px 15px 20px;overflow:auto}
+    table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{padding:8px;border:1px solid var(--line);text-align:left;vertical-align:top;overflow-wrap:anywhere}th{position:sticky;top:0;background:var(--soft);font-size:12px}.field{width:20%}.difference{width:26%}.checked{width:70px;text-align:center;vertical-align:middle}.value,.diff{white-space:pre-wrap}.value{background:var(--red-bg)}.formatting{background:var(--amber-bg)}.diff{background:#fbfcfd;line-height:1.65}.diff-annotation,.diff-prediction{padding:1px 2px;border-radius:3px;font-weight:700;box-decoration-break:clone;-webkit-box-decoration-break:clone}.diff-annotation{background:#ffd9d5;color:#8f1d14;text-decoration:line-through;text-decoration-thickness:1.5px}.diff-prediction{background:#d8f3e5;color:#08663c;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:2px}.diff-legend{display:block;margin-top:3px;color:var(--muted);font-size:10px;font-weight:400;line-height:1.3}.legend-annotation{color:#8f1d14}.legend-prediction{color:#08663c}.kind{display:inline-block;margin-top:4px;padding:2px 6px;border-radius:999px;background:#fbd5d2;color:#7a271a;font-size:11px}.kind.formatting_only{background:#fde9b4;color:#784c00}.similarity{font-size:11px;color:var(--muted);margin-top:3px}
+    input[type=checkbox]{width:19px;height:19px;accent-color:var(--blue);cursor:pointer}.finish-area{margin-top:15px;padding-top:15px;border-top:1px solid var(--line)}.unreadable{display:flex;align-items:center;gap:9px;width:max-content;max-width:100%;font-weight:650}.finish{display:block;width:100%;margin-top:14px;padding:11px 16px;border:1px solid #0e568e;border-radius:6px;background:var(--blue);color:#fff;font:inherit;font-size:15px;font-weight:700;cursor:pointer}.finish:hover{background:#10598f}.finish:disabled{opacity:.6;cursor:wait}.notice{margin-top:9px;color:var(--green)}.empty{padding:60px;text-align:center}.empty h2{margin-bottom:7px;color:var(--green)}details.warning{margin-bottom:11px;padding:10px 14px;background:#fff;border:1px solid var(--line);border-radius:7px}summary{cursor:pointer;font-weight:650}
+    @media(max-width:900px){main{padding:12px}.layout{grid-template-columns:1fr}.scan{border-right:0;border-bottom:1px solid var(--line)}.scan img{position:static;max-height:75vh}.field{width:24%}.checked{width:62px}}
   </style>
 </head>
 <body>
-<header><h1>Qwen prediction review</h1><div id="subtitle" class="muted"></div><div class="toolbar">
-  <input id="search" type="search" placeholder="Search document, field, annotation, or prediction">
-  <select id="split"><option value="">Train + validation</option><option value="train">Train</option><option value="val">Validation</option></select>
-  <select id="status"><option value="open">Open differences</option><option value="all">All differing documents</option><option value="complete">Fully reviewed</option><option value="label_error">Contains label error</option><option value="prediction_error">Contains prediction error</option><option value="formatting_only">Formatting-only deviations</option></select>
-  <button id="export">Export decisions CSV</button>
-</div></header>
-<main><div id="stats" class="stats"></div><div id="warnings"></div><div id="nav" class="nav"></div><div id="content"></div></main>
+<header><h1>Qwen prediction review</h1><div class="muted">Check the actual annotation issues, optionally flag the document for an &lt;unreadable&gt; token, then finish the review. The first finish chooses the XLSX save location.</div></header>
+<main><div id="warnings"></div><div id="progress" class="progress"></div><div id="content"></div></main>
 <script id="review-data" type="application/json">__REVIEW_DATA__</script>
 <script>
 const data=JSON.parse(document.getElementById('review-data').textContent);
-const namespace='qwenPredictionReview:'+data.dataset;let decisions=load(),currentId=data.samples[0]?.id||'';
+const namespace='qwenPredictionReview:v2:'+data.prediction_root;
 const labels={value_mismatch:'value mismatch',prediction_only:'only in prediction',annotation_only:'missing from prediction',formatting_only:'formatting / representation'};
-const options=[['','Unreviewed'],['label_error','Label error'],['prediction_error','Prediction error'],['both_unclear','Both / unclear'],['acceptable','Acceptable difference']];
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function load(){try{return JSON.parse(localStorage.getItem(namespace)||'{}')}catch{return {}}} function save(){localStorage.setItem(namespace,JSON.stringify(decisions))}
-function answer(s,d){return decisions[s.id]?.[d.path]?.decision||''} function complete(s){return s.differences.every(d=>answer(s,d))}
-function filtered(){const q=document.getElementById('search').value.toLowerCase(),split=document.getElementById('split').value,status=document.getElementById('status').value;return data.samples.filter(s=>{const answers=s.differences.map(d=>answer(s,d)),hay=JSON.stringify(s).toLowerCase();return(!q||hay.includes(q))&&(!split||s.split===split)&&(status==='all'||status==='open'&&!complete(s)||status==='complete'&&complete(s)||status==='formatting_only'&&s.differences.every(d=>d.kind==='formatting_only')||answers.includes(status))})}
-function stats(){const fields=data.samples.flatMap(s=>s.differences),reviewed=fields.filter(d=>data.samples.some(s=>s.differences.includes(d)&&answer(s,d))).length;document.getElementById('stats').innerHTML=[["Predictions",data.prediction_count],["Differing documents",data.samples.length],["Field deviations",fields.length],["Reviewed deviations",reviewed]].map(([k,v])=>`<div class="stat"><span class="muted">${k}</span><b>${v}</b></div>`).join('')}
-function selectHtml(s,d){const selected=answer(s,d);return `<select class="decision-select" data-path="${esc(d.path)}" aria-label="Decision for ${esc(d.path)}">${options.map(([v,l])=>`<option value="${v}" ${v===selected?'selected':''}>${l}</option>`).join('')}</select>`}
-function rows(s){return s.differences.map(d=>`<tr><td><code>${esc(d.path)}</code><br><span class="kind ${d.kind}">${esc(labels[d.kind])}</span>${d.similarity!==null&&d.kind==='value_mismatch'?`<div class="similarity">${Math.round(d.similarity*100)}% similar</div>`:''}</td><td class="value ${d.kind==='formatting_only'?'formatting':'different'}">${esc(d.annotation)}</td><td class="value ${d.kind==='formatting_only'?'formatting':'different'}">${esc(d.prediction)}</td><td>${selectHtml(s,d)}</td></tr>`).join('')}
-function render(){const queue=filtered();if(!queue.some(s=>s.id===currentId))currentId=queue[0]?.id||'';const i=queue.findIndex(s=>s.id===currentId),s=queue[i];stats();document.getElementById('nav').innerHTML=queue.length?`<b>${i+1} of ${queue.length} matching documents</b><div class="nav-actions"><button id="prev" ${i<=0?'disabled':''}>← Previous</button><button id="nextOpen">Next open</button><button id="next" ${i>=queue.length-1?'disabled':''}>Next →</button></div>`:'';if(!s){document.getElementById('content').innerHTML='<div class="card empty">No documents match the current filters.</div>';return}const remaining=s.differences.filter(d=>!answer(s,d)).length;document.getElementById('content').innerHTML=`<article class="card"><div class="head"><div><h2>${esc(s.name)}</h2><div class="muted">${esc(s.split)} · ${esc(s.annotation_path)}</div></div><div>${complete(s)?'<span class="done">Reviewed ✓</span> ':''}<span class="count">${s.differences.length} deviations</span></div></div><div class="layout"><div class="scan"><a href="${s.image}" target="_blank"><img src="${s.image}" alt="Scan ${esc(s.name)}"></a><div class="links"><a href="${s.image}" target="_blank">Open full-size scan ↗</a><a href="${s.annotation_editor_url}">Edit annotation JSON</a><a href="${s.prediction_editor_url}">Open prediction JSON</a></div></div><div class="details"><table><thead><tr><th class="field">Field</th><th>Annotation</th><th>Qwen prediction</th><th class="decision">Assessment</th></tr></thead><tbody>${rows(s)}</tbody></table><div class="review-actions"><span class="${remaining?'muted':'done'}">${remaining?remaining+' deviations still unreviewed':'All deviations reviewed ✓'}</span><div><button id="allPrediction">Mark open as prediction errors</button> <button id="clear">Clear this document</button></div></div></div></div></article>`;
-document.querySelectorAll('.decision-select').forEach(el=>el.onchange=()=>setDecision(s,el.dataset.path,el.value));document.getElementById('prev').onclick=()=>go(queue,i-1);document.getElementById('next').onclick=()=>go(queue,i+1);document.getElementById('nextOpen').onclick=()=>nextOpen(s.id);document.getElementById('allPrediction').onclick=()=>{s.differences.forEach(d=>{if(!answer(s,d))put(s,d.path,'prediction_error')});save();render()};document.getElementById('clear').onclick=()=>{delete decisions[s.id];save();render()}}
-function put(s,path,decision){decisions[s.id]??={};if(decision)decisions[s.id][path]={decision,reviewed_at:new Date().toISOString()};else delete decisions[s.id][path]}
-function setDecision(s,path,decision){put(s,path,decision);save();render()} function go(q,i){if(q[i]){currentId=q[i].id;render();scrollTo({top:0,behavior:'smooth'})}}
-function nextOpen(id){const start=data.samples.findIndex(s=>s.id===id);for(let n=1;n<=data.samples.length;n++){const s=data.samples[(start+n)%data.samples.length];if(!complete(s)){currentId=s.id;document.getElementById('status').value='open';render();scrollTo({top:0,behavior:'smooth'});return}}}
-function csv(v){return '"'+String(v??'').replaceAll('"','""')+'"'} function download(name,text){const a=document.createElement('a'),blob=new Blob([text],{type:'text/csv;charset=utf-8'});a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),0)}
-document.getElementById('export').onclick=()=>{const rows=[['sample_id','split','field','annotation','prediction','difference_kind','decision','reviewed_at','annotation_path','image_path']];data.samples.forEach(s=>s.differences.forEach(d=>{const r=decisions[s.id]?.[d.path]||{};rows.push([s.name,s.split,d.path,d.annotation,d.prediction,d.kind,r.decision||'unreviewed',r.reviewed_at||'',s.annotation_path,s.image])}));download('qwen_prediction_review.csv','\ufeff'+rows.map(r=>r.map(csv).join(',')).join('\r\n'))};
-['search','split','status'].forEach(id=>document.getElementById(id).addEventListener(id==='search'?'input':'change',render));document.addEventListener('keydown',e=>{if(['INPUT','SELECT'].includes(document.activeElement.tagName))return;if(e.key==='j'||e.key==='ArrowRight'){const q=filtered(),i=q.findIndex(s=>s.id===currentId);go(q,i+1)}if(e.key==='k'||e.key==='ArrowLeft'){const q=filtered(),i=q.findIndex(s=>s.id===currentId);go(q,i-1)}});
-if(data.warnings.length)document.getElementById('warnings').innerHTML=`<details class="warning"><summary>${data.warnings.length} loading warnings</summary><ul>${data.warnings.map(w=>`<li>${esc(w)}</li>`).join('')}</ul></details>`;document.getElementById('subtitle').textContent=`${data.samples.length} documents with deviations · ${data.exact_count} without meaningful deviations · generated ${data.generated_at}`;render();
+const xml=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
+function loadState(){try{const v=JSON.parse(localStorage.getItem(namespace)||'{}');return{reviews:v.reviews||{},drafts:v.drafts||{}}}catch{return{reviews:{},drafts:{}}}}
+let state=loadState(),currentId=data.samples.find(s=>!state.reviews[s.id])?.id||'',workbookHandle=null,notice='';
+function saveState(){localStorage.setItem(namespace,JSON.stringify(state))}
+function draft(s){return state.drafts[s.id]??={checked:[],unreadable:false}}
+function inlineDiff(d){return d.segments.map(segment=>segment.kind==='equal'?esc(segment.text):`<span class="${segment.kind==='annotation_only'?'diff-annotation':'diff-prediction'}">${esc(segment.text)}</span>`).join('')}
+function rows(s){const checked=new Set(draft(s).checked);return s.differences.map(d=>`<tr><td><code>${esc(d.path)}</code><br><span class="kind ${d.kind}">${esc(labels[d.kind])}</span>${d.similarity!==null&&d.kind==='value_mismatch'?`<div class="similarity">${Math.round(d.similarity*100)}% similar</div>`:''}</td><td class="value ${d.kind==='formatting_only'?'formatting':''}">${esc(d.annotation)}</td><td class="value ${d.kind==='formatting_only'?'formatting':''}">${esc(d.prediction)}</td><td class="diff">${inlineDiff(d)}</td><td class="checked"><input class="issue-check" type="checkbox" data-path="${esc(d.path)}" ${checked.has(d.path)?'checked':''} aria-label="Checked issue ${esc(d.path)}"></td></tr>`).join('')}
+function nextOpen(afterId){const start=Math.max(0,data.samples.findIndex(s=>s.id===afterId));for(let n=1;n<=data.samples.length;n++){const s=data.samples[(start+n)%data.samples.length];if(!state.reviews[s.id])return s.id}return''}
+function render(){const reviewed=Object.keys(state.reviews).length,s=data.samples.find(x=>x.id===currentId&&!state.reviews[x.id])||data.samples.find(x=>!state.reviews[x.id]);currentId=s?.id||'';document.getElementById('progress').innerHTML=`<b>${reviewed} of ${data.samples.length} documents reviewed</b><span class="muted">${data.samples.length-reviewed} remaining</span>`;if(!s){document.getElementById('content').innerHTML=`<div class="card empty"><h2>Review complete ✓</h2><div>All reviewed documents are recorded in qwen_prediction_review.xlsx.</div>${notice?`<div class="notice">${esc(notice)}</div>`:''}</div>`;return}const d=draft(s);document.getElementById('content').innerHTML=`<article class="card"><div class="head"><div><h2>${esc(s.name)}</h2><div class="muted">${esc(s.split)} · ${esc(s.annotation_name)}</div></div><span class="count">${s.differences.length} differences</span></div><div class="layout"><div class="scan"><a href="${s.image}" target="_blank"><img src="${s.image}" alt="Scan ${esc(s.name)}"></a><div class="links"><a href="${s.image}" target="_blank">Open full-size scan ↗</a><a href="${s.annotation}" target="_blank">Open annotation JSON ↗</a><a href="${s.annotation_editor_url}">Edit annotation JSON</a></div></div><div class="details"><table><thead><tr><th class="field">Field</th><th>Annotation</th><th>Qwen prediction</th><th class="difference">Difference<span class="diff-legend"><span class="legend-annotation">red = annotation only</span> · <span class="legend-prediction">green = Qwen only</span></span></th><th class="checked">Checked</th></tr></thead><tbody>${rows(s)}</tbody></table><div class="finish-area"><label class="unreadable"><input id="unreadable" type="checkbox" ${d.unreadable?'checked':''}> Add &lt;unreadable&gt; token later?</label><button id="finish" class="finish">Finish review</button>${notice?`<div class="notice">${esc(notice)}</div>`:''}</div></div></div></article>`;document.querySelectorAll('.issue-check').forEach(el=>el.onchange=()=>{const values=new Set(draft(s).checked);el.checked?values.add(el.dataset.path):values.delete(el.dataset.path);draft(s).checked=[...values];saveState()});document.getElementById('unreadable').onchange=e=>{draft(s).unreadable=e.target.checked;saveState()};document.getElementById('finish').onclick=()=>finishReview(s)}
+
+const encoder=new TextEncoder();
+function joinBytes(parts){const size=parts.reduce((n,p)=>n+p.length,0),out=new Uint8Array(size);let offset=0;for(const part of parts){out.set(part,offset);offset+=part.length}return out}
+function u16(n){return new Uint8Array([n&255,(n>>>8)&255])}function u32(n){return new Uint8Array([n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255])}
+const crcTable=(()=>{const table=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?0xedb88320^(c>>>1):c>>>1;table[n]=c>>>0}return table})();
+function crc32(bytes){let c=0xffffffff;for(const b of bytes)c=crcTable[(c^b)&255]^(c>>>8);return(c^0xffffffff)>>>0}
+function dosStamp(){const d=new Date(),year=Math.max(1980,d.getFullYear());return{time:(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1),date:((year-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate()}}
+function zip(entries){const local=[],central=[];let offset=0;const stamp=dosStamp();for(const [name,content] of entries){const n=encoder.encode(name),body=encoder.encode(content),crc=crc32(body),header=joinBytes([u32(0x04034b50),u16(20),u16(0x0800),u16(0),u16(stamp.time),u16(stamp.date),u32(crc),u32(body.length),u32(body.length),u16(n.length),u16(0),n]);local.push(header,body);central.push(joinBytes([u32(0x02014b50),u16(20),u16(20),u16(0x0800),u16(0),u16(stamp.time),u16(stamp.date),u32(crc),u32(body.length),u32(body.length),u16(n.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset),n]));offset+=header.length+body.length}const directory=joinBytes(central),end=joinBytes([u32(0x06054b50),u16(0),u16(0),u16(entries.length),u16(entries.length),u32(directory.length),u32(offset),u16(0)]);return joinBytes([...local,directory,end])}
+function cell(ref,value,numeric=false){return numeric?`<c r="${ref}"><v>${Number(value)}</v></c>`:`<c r="${ref}" t="inlineStr"><is><t>${xml(value)}</t></is></c>`}
+function workbookBlob(){const headers=['Annotation name','Image name','Reviewed at','Checked issues','Add <unreadable> token later?'],records=Object.entries(state.reviews).sort((a,b)=>a[1].reviewed_at.localeCompare(b[1].reviewed_at));let sheet=`<row r="1">${headers.map((v,i)=>cell(String.fromCharCode(65+i)+'1',v)).join('')}</row>`;records.forEach(([id,r],index)=>{const s=data.samples.find(x=>x.id===id),row=index+2;sheet+=`<row r="${row}">${cell('A'+row,s?.annotation_name||id)}${cell('B'+row,s?.image_name||'')}${cell('C'+row,r.reviewed_at)}${cell('D'+row,r.checked_issues,true)}${cell('E'+row,r.add_unreadable?'Yes':'No')}</row>`});const last=Math.max(1,records.length+1),declaration='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',entries=[['[Content_Types].xml',declaration+'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'],['_rels/.rels',declaration+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],['xl/workbook.xml',declaration+'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Review log" sheetId="1" r:id="rId1"/></sheets></workbook>'],['xl/_rels/workbook.xml.rels',declaration+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'],['xl/worksheets/sheet1.xml',declaration+`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="2" width="55" customWidth="1"/><col min="3" max="3" width="26" customWidth="1"/><col min="4" max="5" width="25" customWidth="1"/></cols><sheetData>${sheet}</sheetData><autoFilter ref="A1:E${last}"/></worksheet>`]];return new Blob([zip(entries)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'})}
+function downloadWorkbook(blob){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='qwen_prediction_review.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+async function saveWorkbook(){const blob=workbookBlob();if('showSaveFilePicker'in window){try{workbookHandle??=await window.showSaveFilePicker({suggestedName:'qwen_prediction_review.xlsx',types:[{description:'Excel workbook',accept:{'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx']}}]});const writable=await workbookHandle.createWritable();await writable.write(blob);await writable.close();return'Workbook updated.'}catch(error){if(error?.name==='AbortError')return'Review recorded in this browser; XLSX save was cancelled.'}}downloadWorkbook(blob);return'Updated workbook downloaded.'}
+async function finishReview(s){const button=document.getElementById('finish');button.disabled=true;button.textContent='Saving…';const d=draft(s);state.reviews[s.id]={reviewed_at:new Date().toISOString(),checked_issues:d.checked.length,add_unreadable:Boolean(d.unreadable)};delete state.drafts[s.id];saveState();notice=await saveWorkbook();currentId=nextOpen(s.id);render();scrollTo({top:0,behavior:'smooth'})}
+if(data.warnings.length)document.getElementById('warnings').innerHTML=`<details class="warning"><summary>${data.warnings.length} loading warnings</summary><ul>${data.warnings.map(w=>`<li>${esc(w)}</li>`).join('')}</ul></details>`;render();
 </script></body></html>'''
 
 

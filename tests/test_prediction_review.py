@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from src.utils.prediction_review import (
+    _inline_diff_segments,
     build_review,
     compare_documents,
     load_review_data,
@@ -13,6 +14,30 @@ from src.utils.prediction_review import (
 
 
 class PredictionReviewTests(unittest.TestCase):
+    def test_inline_diff_highlights_single_extra_character_and_case_change(self) -> None:
+        self.assertEqual(
+            _inline_diff_segments("Helllo World", "Hello world"),
+            [
+                {"kind": "equal", "text": "Hell"},
+                {"kind": "annotation_only", "text": "l"},
+                {"kind": "equal", "text": "o "},
+                {"kind": "annotation_only", "text": "W"},
+                {"kind": "prediction_only", "text": "w"},
+                {"kind": "equal", "text": "orld"},
+            ],
+        )
+
+    def test_inline_diff_keeps_a_repeated_suffix_after_a_replacement(self) -> None:
+        self.assertEqual(
+            _inline_diff_segments("44009", "44099"),
+            [
+                {"kind": "equal", "text": "440"},
+                {"kind": "annotation_only", "text": "0"},
+                {"kind": "prediction_only", "text": "9"},
+                {"kind": "equal", "text": "9"},
+            ],
+        )
+
     def test_compare_marks_value_and_formatting_differences(self) -> None:
         differences = compare_documents(
             {"name": "ACME GmbH", "reference": "001", "missing": "label"},
@@ -30,6 +55,31 @@ class PredictionReviewTests(unittest.TestCase):
             {"items": [{"quantity": None}], "value": ""},
         )
         self.assertEqual(differences, ())
+
+    def test_compare_uses_template_order_for_all_difference_kinds(self) -> None:
+        differences = compare_documents(
+            {"nested": {"second": "old", "third": "label only"}, "first": "old"},
+            {
+                "last": "prediction only",
+                "nested": {"first": "prediction only", "second": "new"},
+                "first": "new",
+            },
+            field_order_template={
+                "first": None,
+                "nested": {"first": None, "second": None, "third": None},
+                "last": None,
+            },
+        )
+        self.assertEqual(
+            [difference.path for difference in differences],
+            [
+                "first",
+                "nested.first",
+                "nested.second",
+                "nested.third",
+                "last",
+            ],
+        )
 
     def test_loader_maps_predictions_through_metadata_and_writes_html(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -76,8 +126,15 @@ class PredictionReviewTests(unittest.TestCase):
             self.assertEqual(len(built.samples), 1)
             self.assertIn("Qwen prediction review", html)
             self.assertIn("Edit annotation JSON", html)
-            self.assertIn("Label error", html)
-            self.assertIn("qwen_prediction_review.csv", html)
+            self.assertIn("Open annotation JSON", html)
+            self.assertIn("Finish review", html)
+            self.assertIn("Add &lt;unreadable&gt; token later?", html)
+            self.assertIn("qwen_prediction_review.xlsx", html)
+            self.assertIn('class=\"issue-check\"', html)
+            self.assertIn('class=\"difference\">Difference', html)
+            self.assertIn('class=\"diff\">${inlineDiff(d)}', html)
+            self.assertIn('"segments":', html)
+            self.assertNotIn("decision-select", html)
             self.assertIn("sender.city", html)
             self.assertIn("vscode://file", html)
 
