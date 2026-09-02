@@ -1,18 +1,18 @@
 {
   "format_version": 1,
-  "name": "qwen35-model-size-screening-untruncated",
-  "description": "Qwen3.5 4B, 9B, and 27B screening rerun on one 96 GB GPU using the original shared QLoRA rank-16 recipe without sequence truncation.",
+  "name": "qwen35-model-size-screening-bf16-lora-untruncated",
+  "description": "Qwen3.5 4B, 9B, and 27B screening on one 96 GB GPU using the shared frozen-vision BF16 LoRA rank-16 recipe without sequence truncation.",
   "experiments": [
     {
-      "config": "qwen35_4b_qlora_r16.json",
+      "config": "qwen35_4b_lora_bf16_r16.json",
       "enabled": true
     },
     {
-      "config": "qwen35_9b_qlora_r16.json",
+      "config": "qwen35_9b_lora_bf16_r16.json",
       "enabled": true
     },
     {
-      "config": "qwen35_27b_qlora_r16.json",
+      "config": "qwen35_27b_lora_bf16_r16.json",
       "enabled": true
     }
   ]
