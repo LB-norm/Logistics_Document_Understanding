@@ -22,8 +22,7 @@
   },
   "takingOverTheGoods": {
     "takingOverTheGoodsPlace": null,
-    "logisticsDateOfArrival": null,
-    "logisticsDateOfDeparture": null
+    "logisticsDateOfArrival": null
   },
   "deliveryOfTheGoods": {
     "logisticsLocationCity": null
@@ -59,7 +58,6 @@
   "itemList": [
     {
       "marksAndNos": {
-        "logisticsShippingMarksCustomBarcode": null,
         "logisticsShippingMarksMarkings": null
       },
       "numberOfPackages": {
@@ -86,7 +84,6 @@
   },
   "signatureOrStampOfTheCarrier": {
     "carrierSignature": {
-      "userName": null,
       "userCompany": null,
       "userStreet": null,
       "userPostCode": null,
@@ -97,7 +94,6 @@
   },
   "goodsReceived": {
     "consigneeSignature": {
-      "userName": null,
       "userCompany": null,
       "userStreet": null,
       "userPostCode": null,

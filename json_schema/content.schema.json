@@ -178,17 +178,13 @@
       "additionalProperties": false,
       "required": [
         "takingOverTheGoodsPlace",
-        "logisticsDateOfArrival",
-        "logisticsDateOfDeparture"
+        "logisticsDateOfArrival"
       ],
       "properties": {
         "takingOverTheGoodsPlace": {
           "$ref": "#/$defs/nullable_string"
         },
         "logisticsDateOfArrival": {
-          "$ref": "#/$defs/nullable_string"
-        },
-        "logisticsDateOfDeparture": {
           "$ref": "#/$defs/nullable_string"
         }
       }
@@ -333,13 +329,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "logisticsShippingMarksCustomBarcode",
         "logisticsShippingMarksMarkings"
       ],
       "properties": {
-        "logisticsShippingMarksCustomBarcode": {
-          "$ref": "#/$defs/nullable_string"
-        },
         "logisticsShippingMarksMarkings": {
           "$ref": "#/$defs/nullable_string"
         }
@@ -421,7 +413,6 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "userName",
         "userCompany",
         "userStreet",
         "userPostCode",
@@ -430,9 +421,6 @@
         "date"
       ],
       "properties": {
-        "userName": {
-          "$ref": "#/$defs/nullable_string"
-        },
         "userCompany": {
           "$ref": "#/$defs/nullable_string"
         },
@@ -457,7 +445,6 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "userName",
         "userCompany",
         "userStreet",
         "userPostCode",
@@ -465,9 +452,6 @@
         "date"
       ],
       "properties": {
-        "userName": {
-          "$ref": "#/$defs/nullable_string"
-        },
         "userCompany": {
           "$ref": "#/$defs/nullable_string"
         },
