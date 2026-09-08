@@ -1,12 +1,11 @@
 {
   "format_version": 1,
   "name": "qwen35-27b-memory-02-nf4-high",
-  "description": "10-step memory probe: NF4 QLoRA, 4194304-pixel image budget.",
+  "description": "10-step memory probe: NF4 QLoRA, high (4.2 MP) resolution.",
   "training": {
     "model_id": "Qwen/Qwen3.5-27B",
     "model_class": "auto",
-    "max_pixels": 4194304,
-    "min_pixels": null,
+    "resolution": "high",
     "max_length": null,
     "load_in_4bit": true,
     "load_in_8bit": false,

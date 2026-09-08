@@ -1,19 +1,20 @@
 # Qwen3.5 27B memory probes
 
-Four short runs compare base-weight quantization and image pixel budgets. All
+Four short runs compare base-weight quantization and image-resolution presets. All
 runs use `Qwen/Qwen3.5-27B` and start in separate Python processes. The configs
 are separate from the model-size screening queue.
 
-| Order | Base-weight format | Maximum image pixels | Square-equivalent budget |
-| --- | --- | ---: | --- |
-| 1 | NF4 QLoRA, double quantization | 1,048,576 | 1024 x 1024 (current default) |
-| 2 | NF4 QLoRA, double quantization | 4,194,304 | 2048 x 2048 |
-| 3 | LLM.int8() + LoRA | 1,048,576 | 1024 x 1024 |
-| 4 | LLM.int8() + LoRA | 4,194,304 | 2048 x 2048 |
+| Order | Base-weight format | Resolution | Maximum image pixels |
+| --- | --- | --- | ---: |
+| 1 | NF4 QLoRA, double quantization | `medium` (default) | 2,800,000 |
+| 2 | NF4 QLoRA, double quantization | `high` | 4,200,000 |
+| 3 | LLM.int8() + LoRA | `medium` (default) | 2,800,000 |
+| 4 | LLM.int8() + LoRA | `high` | 4,200,000 |
 
 These are pixel caps, not forced square dimensions. The processor preserves
-aspect ratio and rounds to patch-compatible dimensions. The higher budget
-allows four times as many pixels; small source images may not use the full cap.
+aspect ratio and rounds to patch-compatible dimensions. Small source images may
+not use the full cap. The standardized project presets also include `low` at
+1.4 MP and `native` at 5.6 MP.
 
 ## Why INT8
 
@@ -111,7 +112,7 @@ Other failures (missing dependencies, unsupported kernels, invalid data) do not
 establish a VRAM limit. If the OS kills the process, only the last persisted
 snapshot may survive and metadata can remain `running`.
 
-The default NF4 run is the expected baseline, but success still depends on the
+The medium-resolution NF4 run is the expected baseline, but success still depends on the
 remote environment and sampled sequence lengths. If all four pass, this matrix
-has not reached the limit. Repeat with a larger `max_pixels` budget in both
-high-resolution configs, or run a full epoch to exercise more target lengths.
+has not reached the limit. Repeat with the `native` resolution preset, or run a
+full epoch to exercise more target lengths.

@@ -1,12 +1,11 @@
 {
   "format_version": 1,
   "name": "qwen35-27b-memory-04-int8-high",
-  "description": "10-step memory probe: LLM.int8() LoRA, 4194304-pixel image budget.",
+  "description": "10-step memory probe: LLM.int8() LoRA, high (4.2 MP) resolution.",
   "training": {
     "model_id": "Qwen/Qwen3.5-27B",
     "model_class": "auto",
-    "max_pixels": 4194304,
-    "min_pixels": null,
+    "resolution": "high",
     "max_length": null,
     "load_in_4bit": false,
     "load_in_8bit": true,

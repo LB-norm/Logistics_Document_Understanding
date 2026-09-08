@@ -18,6 +18,22 @@ The output format is defined by
 
 Datasets, downloaded models, training runs, and inference output are ignored by Git.
 
+## Image-resolution presets
+
+Project interfaces that use a maximum image-pixel budget expose only four named
+`--resolution` presets:
+
+| Preset | Maximum pixels |
+| --- | ---: |
+| `low` | 1.4 MP |
+| `medium` | 2.8 MP (default) |
+| `high` | 4.2 MP |
+| `native` | 5.6 MP |
+
+These are upper bounds rather than forced square dimensions. `native` is the largest
+standardized budget, not an unlimited-resolution mode. Architecture-specific pipelines
+such as Donut that require an explicit fixed height and width retain that interface.
+
 ## Setup
 
 Python 3.12 is used for development. Create a virtual environment and install the
@@ -117,9 +133,10 @@ $env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 .\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py
 ```
 
-The default configuration targets a 12 GB GPU: NF4 4-bit loading, batch size 1,
-gradient accumulation, gradient checkpointing, language-side LoRA, and a frozen vision
-encoder. The defaults are in
+The default configuration uses medium resolution (2.8 MP maximum), NF4 4-bit loading,
+batch size 1, gradient accumulation, gradient checkpointing, language-side LoRA, and a
+frozen vision encoder. Actual VRAM requirements depend on model size and sequence length.
+The defaults are in
 [run_qwen_training.py](src/Qwen/run_qwen_training.py).
 
 Version-controlled experiment JSON files and a sequential single-GPU queue live in

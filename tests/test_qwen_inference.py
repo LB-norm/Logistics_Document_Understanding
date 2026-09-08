@@ -6,9 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from src.Qwen.prompts import DEFAULT_USER_PROMPT
 from src.Qwen.run_inference import (
     ImageInferenceResult,
     InferenceRuntime,
+    build_processor_load_kwargs,
     fill_from_template,
     main,
     parse_args,
@@ -20,8 +22,23 @@ from src.Qwen.run_inference import (
 class QwenInferenceTests(unittest.TestCase):
     def test_default_generation_budget_handles_long_json_targets(self) -> None:
         args = parse_args([])
+        expected_user_prompt = (
+            "Extract all relevant document information into the target CMR/Lieferschein "
+            "content JSON object. Assign information to fields according to its semantic "
+            "meaning, not merely its physical position on the document.\n\n"
+            "If the document clearly contains information for a field but the value cannot "
+            "be transcribed reliably because it is illegible, obscured, or degraded, output "
+            "\"<unreadable>\" instead of guessing or inferring the value from context.\n\n"
+            "Use null when no information for that field is provided, including when its "
+            "physical area is blank or contains text belonging to another field. Use [] when "
+            "an array contains no entries."
+        )
 
         self.assertEqual(args.max_new_tokens, 2048)
+        self.assertEqual(args.resolution, "medium")
+        self.assertEqual(DEFAULT_USER_PROMPT, expected_user_prompt)
+        self.assertEqual(args.user_prompt, expected_user_prompt)
+        self.assertEqual(build_processor_load_kwargs(args)["max_pixels"], 2_800_000)
 
     def test_filled_prediction_keeps_template_shape(self) -> None:
         template = {

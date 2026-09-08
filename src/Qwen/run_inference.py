@@ -12,7 +12,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.Qwen.prompts import DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT
 from src.eval_suite.schema import validate_json_schema
+from src.utils.image_resolution import (
+    DEFAULT_IMAGE_RESOLUTION,
+    IMAGE_RESOLUTION_CHOICES,
+    max_pixels_for_resolution,
+)
 
 DEFAULT_SMALL_TEST_IMAGE_PATH = (
     REPO_ROOT
@@ -28,11 +34,6 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "output" / "qwen_lieferschein_inference"
 DEFAULT_MODEL_ID = "Qwen/Qwen3.5-2B"
 DEFAULT_ANNOTATION_TARGET_KEY = "root"
 DEFAULT_MAX_NEW_TOKENS = 2048
-DEFAULT_SYSTEM_PROMPT = "You are an information extraction model for CMR delivery note scans. Return strict JSON only."
-DEFAULT_USER_PROMPT = (
-    "Extract all relevant document information into the target CMR/Lieferschein content JSON object. "
-    "Use null for missing scalar values and [] for missing arrays."
-)
 
 PRESERVE_TEMPLATE_KEYS = {"document_type", "document_language"}
 
@@ -190,16 +191,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Attention implementation passed to from_pretrained when supported.",
     )
     parser.add_argument(
-        "--min-pixels",
-        type=int,
-        default=None,
-        help="Optional lower bound for the processor image resolution budget.",
-    )
-    parser.add_argument(
-        "--max-pixels",
-        type=int,
-        default=None,
-        help="Optional upper bound for the processor image resolution budget.",
+        "--resolution",
+        choices=IMAGE_RESOLUTION_CHOICES,
+        default=DEFAULT_IMAGE_RESOLUTION,
+        help=(
+            "Image resolution preset: low=1.4 MP, medium=2.8 MP (default), "
+            "high=4.2 MP, native=5.6 MP. Values are upper pixel budgets."
+        ),
     )
     parser.add_argument(
         "--local-files-only",
@@ -369,10 +367,7 @@ def build_processor_load_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"local_files_only": args.local_files_only}
     if args.cache_dir is not None:
         kwargs["cache_dir"] = str(args.cache_dir)
-    if args.min_pixels is not None:
-        kwargs["min_pixels"] = args.min_pixels
-    if args.max_pixels is not None:
-        kwargs["max_pixels"] = args.max_pixels
+    kwargs["max_pixels"] = max_pixels_for_resolution(args.resolution)
     return kwargs
 
 
@@ -724,6 +719,8 @@ def build_diagnostic_record(
             "processor_source": runtime.processor_source,
             "max_new_tokens": args.max_new_tokens,
             "load_in_4bit": resolve_load_in_4bit(args),
+            "resolution": args.resolution,
+            "resolution_max_pixels": max_pixels_for_resolution(args.resolution),
         },
         "raw_text": result.raw_text,
         "cleaned_text": result.cleaned_text,
@@ -784,6 +781,10 @@ def run_inference_on_images(
                         else None
                     ),
                     "processor_source": runtime.processor_source,
+                    "resolution": args.resolution,
+                    "resolution_max_pixels": max_pixels_for_resolution(
+                        args.resolution
+                    ),
                 },
                 "error": f"{type(exc).__name__}: {exc}",
             }

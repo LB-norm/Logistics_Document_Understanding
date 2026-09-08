@@ -8,6 +8,15 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.utils.image_resolution import (
+    DEFAULT_IMAGE_RESOLUTION,
+    IMAGE_RESOLUTION_CHOICES,
+    max_pixels_for_resolution,
+)
+
 DEFAULT_IMAGE_PATH = (
     REPO_ROOT
     / "data"
@@ -34,8 +43,8 @@ class InferenceSummary:
     use_doc_preprocessor: bool
     use_layout_detection: bool
     merge_layout_blocks: bool
-    min_pixels: int | None
-    max_pixels: int | None
+    resolution: str
+    resolution_max_pixels: int
     max_new_tokens: int | None
     layout_detection_model_dir: str | None
     vl_rec_model_dir: str | None
@@ -152,16 +161,13 @@ def parse_args() -> argparse.Namespace:
         help="Disable document preprocessing during prediction.",
     )
     parser.add_argument(
-        "--max-pixels",
-        type=int,
-        default=None,
-        help="Optional maximum image pixel budget for generation.",
-    )
-    parser.add_argument(
-        "--min-pixels",
-        type=int,
-        default=None,
-        help="Optional minimum image pixel budget for generation.",
+        "--resolution",
+        choices=IMAGE_RESOLUTION_CHOICES,
+        default=DEFAULT_IMAGE_RESOLUTION,
+        help=(
+            "Image resolution preset: low=1.4 MP, medium=2.8 MP (default), "
+            "high=4.2 MP, native=5.6 MP. Values are upper pixel budgets."
+        ),
     )
     parser.add_argument(
         "--max-new-tokens",
@@ -253,11 +259,8 @@ def build_pipeline_kwargs(args: argparse.Namespace) -> dict[str, Any]:
 def build_predict_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "use_doc_preprocessor": not args.no_doc_preprocessor,
+        "max_pixels": max_pixels_for_resolution(args.resolution),
     }
-    if args.min_pixels is not None:
-        kwargs["min_pixels"] = args.min_pixels
-    if args.max_pixels is not None:
-        kwargs["max_pixels"] = args.max_pixels
     if args.max_new_tokens is not None:
         kwargs["max_new_tokens"] = args.max_new_tokens
     return kwargs
@@ -336,8 +339,8 @@ def write_manifest(
         use_doc_preprocessor=not args.no_doc_preprocessor,
         use_layout_detection=not args.no_layout_detection,
         merge_layout_blocks=args.merge_layout_blocks,
-        min_pixels=args.min_pixels,
-        max_pixels=args.max_pixels,
+        resolution=args.resolution,
+        resolution_max_pixels=max_pixels_for_resolution(args.resolution),
         max_new_tokens=args.max_new_tokens,
         layout_detection_model_dir=(
             str(args.layout_detection_model_dir)

@@ -89,7 +89,7 @@ and description. Their controlled training recipe is:
 - LoRA rank 16, alpha 32, and dropout 0.05
 - physical batch size 1 with 8 gradient accumulation steps
 - five epochs at learning rate `1e-4`
-- fixed 1024 x 1024 pixel budget, untruncated training sequences, and seed 42
+- `medium` resolution (2.8 MP maximum), untruncated training sequences, and seed 42
 - 2048-token generation budget for validation previews
 - evaluation and checkpointing after every epoch, retaining the best and last model
 

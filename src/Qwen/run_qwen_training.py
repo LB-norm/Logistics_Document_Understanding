@@ -28,9 +28,9 @@ DEFAULT_TRAINING_CONFIG: dict[str, Any] = {
     "local_files_only": False,
     "schema_path": REPO_ROOT / "json_schema" / "content.schema.json",
     "annotation_target_key": "content",
-    # 1,048,576 pixels is roughly a 1024 x 1024 image budget. The processor
-    # preserves aspect ratio, so portrait documents do not become square.
-    "max_pixels": 1024 * 1024,
+    # Medium resolves to a 2.8 MP upper budget. The processor preserves aspect
+    # ratio, so portrait documents do not become square.
+    "resolution": "medium",
     # Do not truncate the combined image, prompt, and assistant target. A fixed
     # 2048-token limit silently removed the end of longer target JSON objects.
     "max_length": None,

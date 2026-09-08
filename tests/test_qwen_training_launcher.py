@@ -9,7 +9,9 @@ from unittest.mock import patch
 
 import torch
 
+from src.Qwen.prompts import DEFAULT_USER_PROMPT
 from src.Qwen.qwen_finetune_logic import (
+    build_processor_load_kwargs,
     build_model_load_kwargs,
     build_training_arguments,
     build_validation_preview_callback,
@@ -53,7 +55,7 @@ class _SavedVisionWrapper(torch.nn.Module):
 
 
 class QwenTrainingLauncherTests(unittest.TestCase):
-    def test_launcher_defaults_target_3080_ti_qlora(self) -> None:
+    def test_launcher_supplies_project_qlora_defaults(self) -> None:
         args = parse_args([], defaults=DEFAULT_TRAINING_CONFIG)
 
         self.assertEqual(args.model_id, "Qwen/Qwen3.5-2B")
@@ -71,6 +73,23 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         self.assertEqual(args.eval_strategy, "epoch")
         self.assertEqual(args.save_strategy, "epoch")
         self.assertEqual(args.save_total_limit, 2)
+        self.assertEqual(args.resolution, "medium")
+        self.assertEqual(args.user_prompt, DEFAULT_USER_PROMPT)
+        self.assertEqual(build_processor_load_kwargs(args)["max_pixels"], 2_800_000)
+
+    def test_training_resolution_presets_resolve_to_project_pixel_budgets(self) -> None:
+        expected = {
+            "low": 1_400_000,
+            "medium": 2_800_000,
+            "high": 4_200_000,
+            "native": 5_600_000,
+        }
+        for resolution, max_pixels in expected.items():
+            with self.subTest(resolution=resolution):
+                args = parse_args(["--resolution", resolution])
+                self.assertEqual(
+                    build_processor_load_kwargs(args)["max_pixels"], max_pixels
+                )
 
     def test_training_arguments_select_lowest_eval_loss_and_retain_two_checkpoints(self) -> None:
         class FakeTrainingArguments:

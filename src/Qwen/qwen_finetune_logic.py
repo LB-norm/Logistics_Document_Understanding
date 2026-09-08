@@ -28,20 +28,18 @@ DEFAULT_SCHEMA_PATH = REPO_ROOT / "json_schema" / "content.schema.json"
 DEFAULT_MODEL_ID = "Qwen/Qwen3.5-2B"
 DEFAULT_RUNS_DIR = REPO_ROOT / "runs" / "qwen"
 DEFAULT_ANNOTATION_TARGET_KEY = "content"
-DEFAULT_SYSTEM_PROMPT = (
-    "You are an information extraction model for CMR delivery note scans. "
-    "Return strict JSON only."
-)
-DEFAULT_USER_PROMPT = (
-    "Extract all relevant document information into the target CMR/Lieferschein "
-    "content JSON object. Use null for missing scalar values and [] for missing arrays."
-)
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.Qwen.prompts import DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT
 from src.Qwen.experiment_config import load_experiment_config
 from src.eval_suite import JsonEvaluator
+from src.utils.image_resolution import (
+    DEFAULT_IMAGE_RESOLUTION,
+    IMAGE_RESOLUTION_CHOICES,
+    max_pixels_for_resolution,
+)
 from src.utils.run_utils import RunContext, namespace_to_dict, normalize_trainer_metrics, write_json
 from src.utils.vram_tracking import PeakVramTracker, build_peak_vram_callback
 
@@ -160,16 +158,13 @@ def parse_args(
         ),
     )
     parser.add_argument(
-        "--min-pixels",
-        type=int,
-        default=None,
-        help="Optional lower bound for the processor image resolution budget.",
-    )
-    parser.add_argument(
-        "--max-pixels",
-        type=int,
-        default=None,
-        help="Optional upper bound for the processor image resolution budget.",
+        "--resolution",
+        choices=IMAGE_RESOLUTION_CHOICES,
+        default=DEFAULT_IMAGE_RESOLUTION,
+        help=(
+            "Image resolution preset: low=1.4 MP, medium=2.8 MP (default), "
+            "high=4.2 MP, native=5.6 MP. Values are upper pixel budgets."
+        ),
     )
     parser.add_argument(
         "--max-length",
@@ -1407,16 +1402,7 @@ def validate_training_options(args: argparse.Namespace) -> None:
         raise ValueError("--lora-alpha must be at least 1.")
     if not 0.0 <= args.lora_dropout < 1.0:
         raise ValueError("--lora-dropout must be in the range [0, 1).")
-    if args.min_pixels is not None and args.min_pixels < 1:
-        raise ValueError("--min-pixels must be positive.")
-    if args.max_pixels is not None and args.max_pixels < 1:
-        raise ValueError("--max-pixels must be positive.")
-    if (
-        args.min_pixels is not None
-        and args.max_pixels is not None
-        and args.min_pixels > args.max_pixels
-    ):
-        raise ValueError("--min-pixels cannot exceed --max-pixels.")
+    max_pixels_for_resolution(args.resolution)
     if args.max_length is not None and args.max_length < 1:
         raise ValueError("--max-length must be positive when supplied.")
     if args.validation_preview_samples < 0:
@@ -1635,10 +1621,7 @@ def build_processor_load_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"local_files_only": args.local_files_only}
     if args.cache_dir is not None:
         kwargs["cache_dir"] = str(args.cache_dir)
-    if args.min_pixels is not None:
-        kwargs["min_pixels"] = args.min_pixels
-    if args.max_pixels is not None:
-        kwargs["max_pixels"] = args.max_pixels
+    kwargs["max_pixels"] = max_pixels_for_resolution(args.resolution)
     return kwargs
 
 
@@ -1806,6 +1789,10 @@ def main(
             args=args,
         )
         print(f"  model_id: {args.model_id}")
+        print(
+            f"  resolution: {args.resolution} "
+            f"({max_pixels_for_resolution(args.resolution):,} max pixels)"
+        )
         print(f"  load_in_4bit: {args.load_in_4bit}")
         print(f"  load_in_8bit: {args.load_in_8bit}")
         print(f"  vision_tuning: {args.vision_tuning}")
@@ -2033,6 +2020,7 @@ def main(
         resolved_config = namespace_to_dict(args)
         resolved_config.update(
             {
+                "resolution_max_pixels": max_pixels_for_resolution(args.resolution),
                 "resolved_dataset_root": resolved_dataset_root,
                 "source_layout": source_layout,
                 "train_source": train_source,

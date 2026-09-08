@@ -1,7 +1,8 @@
 # Qwen QLoRA training
 
 This pipeline fine-tunes Qwen vision-language models for CMR and delivery-note extraction.
-The default run uses `Qwen/Qwen3.5-2B` and fits on an RTX 3080 Ti with 12 GB VRAM.
+The default run uses `Qwen/Qwen3.5-2B`; its VRAM requirement depends strongly on the
+selected resolution and document sequence lengths.
 
 ## Files
 
@@ -77,7 +78,7 @@ The default configuration is:
 | Model | `Qwen/Qwen3.5-2B` |
 | Quantization | NF4 4-bit with double quantization |
 | Compute dtype | BF16 |
-| Image budget | 1,048,576 pixels |
+| Resolution | `medium` (2.8 MP maximum; default) |
 | Maximum training sequence | Unset (no truncation) |
 | Batch size | 1 |
 | Gradient accumulation | 8 |
@@ -115,7 +116,7 @@ answers.
 
 | Command | Trained parameters | Typical use |
 | --- | --- | --- |
-| `--vision-tuning frozen` | Language LoRA only | Default 12 GB run |
+| `--vision-tuning frozen` | Language LoRA only | Lowest-memory tuning mode |
 | `--vision-tuning lora` | Language and vision LoRA | Adapt visual features with a moderate memory increase |
 | `--vision-tuning full --no-load-in-4bit` | Language LoRA and the full vision encoder | Larger GPU; the full vision module is saved with the adapter |
 
@@ -142,11 +143,25 @@ machine, select another compatible checkpoint and adjust the memory settings:
   --run-name qwen35-9b-language-qlora
 ```
 
-The main memory controls are `--max-pixels`, batch size, LoRA rank, quantization, and
+The main memory controls are `--resolution`, batch size, LoRA rank, quantization, and
 gradient checkpointing. Training leaves `--max-length` unset so the processor does not
 truncate the image, prompt, or target JSON. Only set it after checking that every complete
 processed sequence, including the assistant end token, fits below the chosen limit. Keep
 `modules_to_save` empty unless an additional non-LoRA module must be trained and stored.
+
+Image resolution is selected exclusively through four project presets. Each value is an
+upper pixel budget; the processor preserves aspect ratio and patch-compatible dimensions:
+
+| Preset | Maximum pixels |
+| --- | ---: |
+| `low` | 1.4 MP |
+| `medium` | 2.8 MP (default) |
+| `high` | 4.2 MP |
+| `native` | 5.6 MP |
+
+For example, add `--resolution high` to training or inference. `native` is the name of
+the largest standardized project preset and still caps inputs at 5.6 MP; it does not mean
+unlimited source resolution. Images below a preset's cap are not forced to use every pixel.
 
 ## Validation during training
 
@@ -245,8 +260,23 @@ unique to prevent accidental output overwrites. `--template-path` and
 Inference uses the same default system and user prompts as project fine-tuning.
 They can be overridden with `--system-prompt` and `--user-prompt` for checkpoints
 trained with a different prompt contract. The default `--max-new-tokens 2048`
-accommodates the longest JSON targets in the current dataset. Use `--help` to list
-the remaining options.
+accommodates the longest JSON targets in the current dataset. Inference also defaults to
+`--resolution medium`, matching training. Use `--help` to list the remaining options.
+
+The shared defaults are defined once in `src/Qwen/prompts.py`. The user prompt instructs
+the model to assign values by semantic meaning rather than physical position, emit
+`"<unreadable>"` only for information that is present but cannot be transcribed reliably,
+and reserve `null` for information that is not provided.
+
+The canonical default user prompt is:
+
+```text
+Extract all relevant document information into the target CMR/Lieferschein content JSON object. Assign information to fields according to its semantic meaning, not merely its physical position on the document.
+
+If the document clearly contains information for a field but the value cannot be transcribed reliably because it is illegible, obscured, or degraded, output "<unreadable>" instead of guessing or inferring the value from context.
+
+Use null when no information for that field is provided, including when its physical area is blank or contains text belonging to another field. Use [] when an array contains no entries.
+```
 
 ## Dataset formats
 

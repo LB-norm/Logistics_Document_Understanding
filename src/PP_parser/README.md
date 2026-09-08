@@ -3,6 +3,10 @@
 This folder currently contains PaddleOCR-VL/PP-Structure inference experiments and a
 dataset preparation script for PaddleOCR-VL fine-tuning.
 
+`PPStructureV3_parser.py` uses the same project resolution presets as Qwen:
+`low` (1.4 MP), `medium` (2.8 MP, default), `high` (4.2 MP), and `native`
+(5.6 MP). Select one with `--resolution`; each preset is an upper pixel budget.
+
 ## Current State
 
 - `PP_OCR_VL.py` is a minimal inference smoke script.
