@@ -26,16 +26,18 @@ Check the dataset without loading the model:
 Start the configured run on an NVIDIA GPU:
 
 ```powershell
-$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 .\.venv\Scripts\python.exe src\Donut\run_donut_training.py --fp16
 ```
 
 With an activated Linux environment:
 
 ```bash
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 python src/Donut/run_donut_training.py --fp16
 ```
+
+The training launcher enables PyTorch's `expandable_segments:True` CUDA allocator
+setting before importing PyTorch. An explicitly exported
+`PYTORCH_CUDA_ALLOC_CONF` value takes precedence over this default.
 
 The launcher uses `local_files_only=True`. If `naver-clova-ix/donut-base` is not cached,
 allow the first run to download it:

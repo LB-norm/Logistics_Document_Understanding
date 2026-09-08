@@ -57,16 +57,19 @@ Check that the dataset and annotations can be read. This does not load Qwen:
 Start the default 2B QLoRA run:
 
 ```powershell
-$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 .\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py
 ```
 
 With an activated Linux environment, the equivalent command is:
 
 ```bash
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 python src/Qwen/run_qwen_training.py
 ```
+
+The training launcher enables PyTorch's `expandable_segments:True` CUDA allocator
+setting before importing PyTorch. This reduces allocator fragmentation for variable
+training allocation sizes. An explicitly exported `PYTORCH_CUDA_ALLOC_CONF` value
+takes precedence over this default.
 
 The first run downloads the base model from Hugging Face. Use
 `--local-files-only` only after the checkpoint is cached.

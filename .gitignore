@@ -16,12 +16,7 @@ models/
 # Research material not intended for publication with the code
 theory/
 
-# Generated documents, inference output, and augmentation caches
+# Inference output and training runs
 output/
-synthetic_lieferscheine/
-augraphy_cache/
 runs/
 tmp/
-
-# Downloaded and derived product-name datasets
-src/dataset_gen/*.jsonl

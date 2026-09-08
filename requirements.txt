@@ -16,12 +16,6 @@ paddleocr>=3.4
 paddlepaddle>=3.2
 matplotlib>=3.8
 
-# Synthetic document generation
-Faker>=24.0
-WeasyPrint>=60.0
-opencv-python>=4.10
-augraphy>=8.2
-
-# The synthetic generator also requires the Poppler `pdftoppm` executable, which
-# must be installed through the operating system package manager.
+# The dataset PDF-conversion utility can optionally use Poppler's `pdftoppm`
+# executable, which must be installed through the operating system package manager.
 # Install CUDA-specific PyTorch and PaddlePaddle wheels separately when needed.

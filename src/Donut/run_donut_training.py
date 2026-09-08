@@ -11,10 +11,15 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from src.training_environment import configure_pytorch_cuda_allocator
+
+# PyTorch reads allocator configuration while CUDA is initialized, so apply the
+# process default before importing any training modules that can import torch.
+configure_pytorch_cuda_allocator()
 
 from src.Donut.donut_train_logic import main as run_training
 

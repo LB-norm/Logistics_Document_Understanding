@@ -58,9 +58,8 @@ python -m pip install -r requirements.txt
 ```
 
 Install CUDA-specific PyTorch or PaddlePaddle wheels separately when the versions from
-`requirements.txt` do not match the local CUDA setup. The synthetic document generator
-also needs Poppler's `pdftoppm` executable and the system dependencies required by
-WeasyPrint.
+`requirements.txt` do not match the local CUDA setup. Dataset PDF conversion can
+optionally use Poppler's `pdftoppm` executable as an alternative to PyMuPDF.
 
 ## Dataset layout
 
@@ -106,7 +105,6 @@ Check the dataset first:
 Start the configured run on an NVIDIA GPU:
 
 ```powershell
-$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 .\.venv\Scripts\python.exe src\Donut\run_donut_training.py --fp16
 ```
 
@@ -129,13 +127,15 @@ Check the dataset without loading the model:
 Start the default `Qwen/Qwen3.5-2B` QLoRA run:
 
 ```powershell
-$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 .\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py
 ```
 
 The default configuration uses medium resolution (2.8 MP maximum), NF4 4-bit loading,
 batch size 1, gradient accumulation, gradient checkpointing, language-side LoRA, and a
 frozen vision encoder. Actual VRAM requirements depend on model size and sequence length.
+Both training launchers enable PyTorch's `expandable_segments:True` CUDA allocator
+setting by default to reduce fragmentation. An explicitly exported
+`PYTORCH_CUDA_ALLOC_CONF` value takes precedence.
 The defaults are in
 [run_qwen_training.py](src/Qwen/run_qwen_training.py).
 
