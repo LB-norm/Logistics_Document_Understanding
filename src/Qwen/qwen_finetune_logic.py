@@ -43,6 +43,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.Qwen.experiment_config import load_experiment_config
 from src.eval_suite import JsonEvaluator
 from src.utils.run_utils import RunContext, namespace_to_dict, normalize_trainer_metrics, write_json
+from src.utils.vram_tracking import PeakVramTracker, build_peak_vram_callback
 
 
 def parse_args(
@@ -260,11 +261,16 @@ def parse_args(
         action="store_true",
         help="Load the base model in 4-bit and run QLoRA training.",
     )
+    quantization_group.add_argument(
+        "--load-in-8bit",
+        action="store_true",
+        help="Load the base model with bitsandbytes LLM.int8() and train LoRA adapters.",
+    )
     parser.add_argument(
         "--optim",
         default="auto",
         help=(
-            "Trainer optimizer name. 'auto' selects paged_adamw_8bit for QLoRA and "
+            "Trainer optimizer name. 'auto' selects paged_adamw_8bit for 4/8-bit LoRA and "
             "adamw_torch for regular LoRA/full-vision training."
         ),
     )
@@ -272,7 +278,7 @@ def parse_args(
         "--no-load-in-4bit",
         dest="load_in_4bit",
         action="store_false",
-        help="Disable 4-bit loading and run regular LoRA.",
+        help="Disable quantized loading (4-bit or 8-bit) and run regular LoRA.",
     )
     parser.set_defaults(load_in_4bit=True)
     parser.add_argument(
@@ -387,6 +393,11 @@ def parse_args(
         parser.set_defaults(**merged_defaults)
 
     args = parser.parse_args(raw_argv)
+    # An explicit mode overrides both flags inherited from launcher/JSON defaults.
+    if "--load-in-8bit" in raw_argv:
+        args.load_in_4bit = False
+    elif "--load-in-4bit" in raw_argv or "--no-load-in-4bit" in raw_argv:
+        args.load_in_8bit = False
     args.experiment_name = experiment_config.name if experiment_config else None
     args.experiment_description = experiment_config.description if experiment_config else None
     args.experiment_config_path = (
@@ -395,7 +406,9 @@ def parse_args(
     return args
 
 
-def load_runtime_dependencies(load_in_4bit: bool) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any, Any]:
+def load_runtime_dependencies(
+    load_in_4bit: bool, load_in_8bit: bool = False,
+) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any, Any]:
     missing: list[str] = []
 
     try:
@@ -441,7 +454,7 @@ def load_runtime_dependencies(load_in_4bit: bool) -> tuple[Any, Any, Any, Any, A
         get_peft_model = None
         prepare_model_for_kbit_training = None
 
-    if load_in_4bit:
+    if load_in_4bit or load_in_8bit:
         try:
             import bitsandbytes  # noqa: F401
         except ImportError:
@@ -1263,6 +1276,7 @@ def build_validation_preview_callback(
                 "max_new_tokens": max_new_tokens,
                 "samples": [],
             }
+            fatal_error = None
             try:
                 model.eval()
                 with torch.inference_mode():
@@ -1286,6 +1300,8 @@ def build_validation_preview_callback(
             except Exception as exc:
                 payload["status"] = "failed"
                 payload["error"] = f"{type(exc).__name__}: {exc}"
+                if isinstance(exc, getattr(torch, "OutOfMemoryError", ())):
+                    fatal_error = exc
                 print(
                     f"Validation preview failed at step {global_step}: {payload['error']}",
                     file=sys.stderr,
@@ -1296,6 +1312,8 @@ def build_validation_preview_callback(
 
             paths = write_validation_preview(output_dir, payload)
             print(f"Saved validation preview for step {global_step} to {paths['html']}")
+            if fatal_error is not None:
+                raise fatal_error
             return control
 
     return ValidationPreviewCallback()
@@ -1381,6 +1399,8 @@ def parse_vision_module_names(raw_value: str) -> list[str]:
 
 
 def validate_training_options(args: argparse.Namespace) -> None:
+    if args.load_in_4bit and args.load_in_8bit:
+        raise ValueError("4-bit and 8-bit loading cannot both be enabled.")
     if args.lora_r < 1:
         raise ValueError("--lora-r must be at least 1.")
     if args.lora_alpha < 1:
@@ -1423,9 +1443,9 @@ def validate_training_options(args: argparse.Namespace) -> None:
             "--save-total-limit must be at least 2 so the best and last resumable "
             "checkpoints are both retained."
         )
-    if args.vision_tuning == "full" and args.load_in_4bit:
+    if args.vision_tuning == "full" and (args.load_in_4bit or args.load_in_8bit):
         raise ValueError(
-            "Full vision-encoder tuning is incompatible with 4-bit QLoRA weights. "
+            "Full vision-encoder tuning is incompatible with 4-bit or 8-bit quantized weights. "
             "Use --vision-tuning lora, or combine --vision-tuning full with --no-load-in-4bit."
         )
     parse_vision_module_names(args.vision_module_names)
@@ -1567,7 +1587,7 @@ def resolve_gradient_checkpointing(args: argparse.Namespace) -> bool:
 def resolve_optimizer(args: argparse.Namespace, load_in_4bit: bool) -> str:
     if args.optim != "auto":
         return args.optim
-    return "paged_adamw_8bit" if load_in_4bit else "adamw_torch"
+    return "paged_adamw_8bit" if load_in_4bit or args.load_in_8bit else "adamw_torch"
 
 
 def build_model_load_kwargs(
@@ -1597,6 +1617,14 @@ def build_model_load_kwargs(
             bnb_4bit_quant_type=args.bnb_4bit_quant_type,
             bnb_4bit_compute_dtype=resolve_dtype(args, torch),
         )
+    elif args.load_in_8bit:
+        kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_8bit=True,
+            llm_int8_threshold=6.0,
+            llm_int8_has_fp16_weight=False,
+            llm_int8_enable_fp32_cpu_offload=False,
+        )
+        kwargs["torch_dtype"] = resolve_dtype(args, torch)
     else:
         kwargs["torch_dtype"] = resolve_dtype(args, torch)
 
@@ -1651,6 +1679,9 @@ def build_training_arguments(
         bf16=bf16,
         fp16=fp16,
         report_to="none",
+        # Our tracker retains absolute peaks from model loading onwards. The
+        # Trainer memory tracker would reset CUDA peaks between stages.
+        skip_memory_metrics=True,
         do_train=True,
         do_eval=True,
         load_best_model_at_end=True,
@@ -1776,6 +1807,7 @@ def main(
         )
         print(f"  model_id: {args.model_id}")
         print(f"  load_in_4bit: {args.load_in_4bit}")
+        print(f"  load_in_8bit: {args.load_in_8bit}")
         print(f"  vision_tuning: {args.vision_tuning}")
         print(f"  target_modules: {parse_target_modules(args.target_modules)}")
         print(f"  validation_preview_samples: {len(validation_preview_examples)}")
@@ -1835,6 +1867,7 @@ def main(
         },
     )
 
+    vram_tracker = None
     try:
         (
             torch,
@@ -1847,8 +1880,12 @@ def main(
             TrainingArguments,
             peft_fns,
             transformers_module,
-        ) = load_runtime_dependencies(load_in_4bit=load_in_4bit)
+        ) = load_runtime_dependencies(
+            load_in_4bit=load_in_4bit, load_in_8bit=args.load_in_8bit,
+        )
         LoraConfig, get_peft_model, prepare_model_for_kbit_training = peft_fns
+        vram_tracker = PeakVramTracker(torch, args.output_dir)
+        vram_tracker.record("initializing")
 
         gradient_checkpointing = resolve_gradient_checkpointing(args)
         bf16, fp16 = choose_precision_flags(args)
@@ -1874,7 +1911,7 @@ def main(
             )
 
         model.config.use_cache = False
-        if load_in_4bit:
+        if load_in_4bit or args.load_in_8bit:
             model = prepare_model_for_kbit_training(
                 model,
                 use_gradient_checkpointing=gradient_checkpointing,
@@ -1955,6 +1992,9 @@ def main(
                 )
             )
 
+        # Run after previews so their generation peaks are included immediately.
+        callbacks.append(build_peak_vram_callback(TrainerCallback, vram_tracker))
+
         training_args = build_training_arguments(
             TrainingArguments,
             args,
@@ -1973,6 +2013,7 @@ def main(
             data_collator=data_collator,
             callbacks=callbacks,
         )
+        vram_tracker.record("model_loaded", trainer.state.global_step)
 
         train_result = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
         eval_metrics = trainer.evaluate()
@@ -1998,6 +2039,7 @@ def main(
                 "validation_source": validation_source,
                 "gradient_checkpointing": gradient_checkpointing,
                 "load_in_4bit": load_in_4bit,
+                "load_in_8bit": args.load_in_8bit,
                 "optimizer": resolve_optimizer(args, load_in_4bit),
                 "requested_target_modules": parse_target_modules(args.target_modules),
                 "target_modules": effective_target_modules,
@@ -2027,10 +2069,12 @@ def main(
             "train": normalize_trainer_metrics(train_result.metrics, "train"),
             "evaluation": normalize_trainer_metrics(eval_metrics, "eval"),
         }
+        vram_summary = vram_tracker.record("completed", trainer.state.global_step)
         run_context.write_status(
             "completed",
             sections={
                 "configuration": resolved_config,
+                "vram": vram_summary,
                 "dataset": {
                     "resolved_dataset_root": resolved_dataset_root,
                     "source_layout": source_layout,
@@ -2063,9 +2107,17 @@ def main(
         )
         return 0
     except Exception as exc:
+        vram_sections = {}
+        if vram_tracker is not None:
+            try:
+                vram_sections["vram"] = vram_tracker.record("failed")
+            except Exception as tracking_error:
+                # A broken CUDA context must not hide the original failure.
+                print(f"Could not record final VRAM peaks: {tracking_error}", file=sys.stderr)
         run_context.write_status(
             "failed",
             sections={
+                **vram_sections,
                 "configuration": namespace_to_dict(args),
                 "validation_previews": {
                     "enabled": bool(validation_preview_examples),

@@ -4,11 +4,14 @@ This directory stores portable, version-controlled Qwen experiment definitions.
 The training code remains in `src/Qwen`; these JSON files describe only what is
 different for a particular run.
 
+For short 27B NF4/INT8 capacity probes at two image resolutions, see the
+separate [memory-test queue](memory_tests/README.md).
+
 The current queue runs the model-size screening campaign for the official Qwen3.5
-4B, 9B, and 27B checkpoints sequentially with the same frozen-vision BF16 LoRA
-rank-16 recipe. Training sequence truncation is disabled. The previous NF4 QLoRA
-configurations and the 35B-A3B configuration remain available for reference but are
-excluded from `queue.json`.
+4B, 9B, and 27B checkpoints sequentially with the same frozen-vision NF4 QLoRA
+rank-16 recipe. Training sequence truncation is disabled. The non-quantized BF16
+LoRA configurations and the 35B-A3B configuration remain available for reference
+but are excluded from `queue.json`.
 
 ## Run one experiment
 
@@ -16,7 +19,7 @@ From the repository root:
 
 ```bash
 python src/Qwen/run_qwen_training.py \
-  --config experiments/qwen/qwen35_4b_lora_bf16_r16.json \
+  --config experiments/qwen/qwen35_4b_qlora_r16.json \
   --dataset-root /mnt/datasets/250_CMRS_240dpi_20260707
 ```
 
@@ -55,12 +58,33 @@ or `--start-at EXPERIMENT_NAME` to restart from a specific active entry.
 Before leaving a long remote run unattended, use `--list` and verify the dataset,
 run-output, and model-cache paths passed to the queue command.
 
+## Peak VRAM logging
+
+Both QLoRA and non-quantized LoRA runs automatically write `vram_usage.json` in
+the run directory. It is refreshed at training log steps, evaluations, training
+end, and completion, with the latest peaks also printed to the console (and
+`queue.log` when using `tee`). Completed runs include the same summary under
+`vram` in `run_metadata.json`. On a caught training failure, the code also tries
+to save the peaks reached before failure.
+
+Each visible CUDA device has `peak_allocated_bytes`, `peak_reserved_bytes`, and
+equivalent `_gib` fields. Peaks are tracked continuously from before model
+loading, including training, validation previews, and final evaluation. Reading
+the counters does not reset them, so short allocation spikes between log steps
+are retained. Resuming training starts a new measurement window.
+
+These are the current process's PyTorch allocator peaks: allocated memory holds
+tensors; reserved memory also includes the allocator's cached blocks. They
+exclude CUDA context overhead, allocations outside PyTorch, and other processes,
+so they do not represent the total board usage reported by `nvidia-smi` or an
+exact minimum GPU capacity. Without CUDA, the summary reports `available: false`.
+
 ## Current model-size screening
 
 The three queued configurations differ only in their `model_id`, experiment name,
 and description. Their controlled training recipe is:
 
-- non-quantized BF16 LoRA
+- 4-bit NF4 QLoRA with BF16 compute
 - frozen vision encoder and language-side `all-linear` LoRA targets
 - LoRA rank 16, alpha 32, and dropout 0.05
 - physical batch size 1 with 8 gradient accumulation steps

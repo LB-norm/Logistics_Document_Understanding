@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from src.Qwen.experiment_config import load_experiment_config, load_experiment_queue
 from src.Qwen.qwen_finetune_logic import parse_args as parse_training_args
+from src.Qwen.qwen_finetune_logic import validate_training_options
 from src.Qwen.run_qwen_experiment_queue import main as run_queue
 from src.Qwen.run_qwen_training import DEFAULT_TRAINING_CONFIG
 
@@ -71,6 +72,43 @@ class QwenExperimentConfigTests(unittest.TestCase):
 
 
 class QwenExperimentQueueTests(unittest.TestCase):
+    def test_memory_queue_varies_only_weight_quantization_and_pixel_budget(self) -> None:
+        queue_path = Path(__file__).resolve().parents[1] / "experiments/qwen/memory_tests/queue.json"
+        queue = load_experiment_queue(queue_path)
+        expected_modes = [(True, False), (True, False), (False, True), (False, True)]
+        expected_pixels = [1048576, 4194304, 1048576, 4194304]
+        fixed_settings = []
+        self.assertEqual(len(queue.entries), 4)
+        for entry, modes, pixels in zip(queue.entries, expected_modes, expected_pixels):
+            self.assertTrue(entry.enabled)
+            args = parse_training_args(["--config", str(entry.config_path)], defaults=DEFAULT_TRAINING_CONFIG)
+            validate_training_options(args)
+            self.assertEqual((args.load_in_4bit, args.load_in_8bit), modes)
+            self.assertEqual(args.max_pixels, pixels)
+            self.assertEqual(args.model_id, "Qwen/Qwen3.5-27B")
+            self.assertEqual(args.max_steps, 10)
+            self.assertIsNone(args.max_length)
+            self.assertEqual(args.optim, "paged_adamw_8bit")
+            self.assertEqual(args.max_steps % args.save_steps, 0)
+            training = load_experiment_config(entry.config_path).training
+            fixed_settings.append({
+                key: value for key, value in training.items()
+                if key not in {"run_name", "load_in_4bit", "load_in_8bit", "max_pixels"}
+            })
+        self.assertTrue(all(settings == fixed_settings[0] for settings in fixed_settings))
+
+    def test_memory_queue_continues_after_oom_process_failure(self) -> None:
+        queue_path = Path(__file__).resolve().parents[1] / "experiments/qwen/memory_tests/queue.json"
+        calls = []
+
+        def fake_run(command, *, cwd, check):
+            calls.append(command)
+            return SimpleNamespace(returncode=1 if len(calls) == 2 else 0)
+
+        result = run_queue([str(queue_path), "--continue-on-error"], run_process=fake_run)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(result, 1)
+
     def test_queue_resolves_relative_paths_and_preserves_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -10,6 +10,7 @@ from unittest.mock import patch
 import torch
 
 from src.Qwen.qwen_finetune_logic import (
+    build_model_load_kwargs,
     build_training_arguments,
     build_validation_preview_callback,
     configure_vision_tuning,
@@ -19,6 +20,7 @@ from src.Qwen.qwen_finetune_logic import (
     generate_validation_preview_sample,
     parse_args,
     resolve_lora_target_modules,
+    resolve_optimizer,
     save_best_and_last_model_artifacts,
     select_validation_preview_examples,
     select_model_loader,
@@ -101,6 +103,21 @@ class QwenTrainingLauncherTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "best and last"):
             validate_training_options(args)
+
+    def test_lora_and_qlora_do_not_reset_the_custom_vram_tracker(self) -> None:
+        args = parse_args([], defaults=DEFAULT_TRAINING_CONFIG)
+        for load_in_4bit in (False, True):
+            with self.subTest(load_in_4bit=load_in_4bit):
+                training_args = build_training_arguments(
+                    SimpleNamespace,
+                    args,
+                    output_dir=Path("output"),
+                    gradient_checkpointing=True,
+                    bf16=True,
+                    fp16=False,
+                    load_in_4bit=load_in_4bit,
+                )
+                self.assertTrue(training_args.skip_memory_metrics)
 
     def test_checkpoint_policy_rejects_mismatched_step_intervals(self) -> None:
         args = parse_args(["--eval-steps", "25", "--save-steps", "50"])
@@ -211,6 +228,64 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         args = parse_args(["--vision-tuning", "full", "--no-load-in-4bit"])
 
         validate_training_options(args)
+
+    def test_int8_cli_overrides_default_nf4_and_builds_int8_model_config(self) -> None:
+        from transformers import BitsAndBytesConfig
+
+        args = parse_args(["--load-in-8bit"], defaults=DEFAULT_TRAINING_CONFIG)
+        validate_training_options(args)
+        self.assertFalse(args.load_in_4bit)
+        self.assertTrue(args.load_in_8bit)
+        kwargs = build_model_load_kwargs(args, torch, BitsAndBytesConfig, args.load_in_4bit)
+        quantization = kwargs["quantization_config"]
+        self.assertTrue(quantization.load_in_8bit)
+        self.assertFalse(quantization.load_in_4bit)
+        self.assertFalse(quantization.llm_int8_has_fp16_weight)
+        self.assertFalse(quantization.llm_int8_enable_fp32_cpu_offload)
+        self.assertEqual(quantization.llm_int8_threshold, 6.0)
+        self.assertEqual(kwargs["torch_dtype"], torch.bfloat16)
+        self.assertEqual(resolve_optimizer(args, args.load_in_4bit), "paged_adamw_8bit")
+
+    def test_explicit_cli_modes_override_int8_defaults(self) -> None:
+        for flag, expected_4bit in (("--load-in-4bit", True), ("--no-load-in-4bit", False)):
+            with self.subTest(flag=flag):
+                args = parse_args([flag], defaults={"load_in_8bit": True, "load_in_4bit": False})
+                self.assertFalse(args.load_in_8bit)
+                self.assertEqual(args.load_in_4bit, expected_4bit)
+
+    def test_conflicting_quantization_defaults_are_rejected(self) -> None:
+        args = parse_args([], defaults={"load_in_4bit": True, "load_in_8bit": True})
+        with self.assertRaisesRegex(ValueError, "cannot both be enabled"):
+            validate_training_options(args)
+
+    def test_full_vision_tuning_rejects_int8_base(self) -> None:
+        args = parse_args(["--vision-tuning", "full", "--load-in-8bit"])
+        with self.assertRaisesRegex(ValueError, "quantized weights"):
+            validate_training_options(args)
+
+    def test_preview_oom_propagates_after_saving_failure_details(self) -> None:
+        model = _MultimodalModel()
+        with tempfile.TemporaryDirectory() as directory:
+            callback = build_validation_preview_callback(
+                TrainerCallback=object,
+                torch=torch,
+                image_module=object(),
+                processor=object(),
+                examples=[{"id": "example"}],
+                output_dir=Path(directory),
+                max_new_tokens=32,
+                target_schema={"type": "object"},
+            )
+            state = SimpleNamespace(global_step=5, epoch=0.5, is_world_process_zero=True)
+            with patch(
+                "src.Qwen.qwen_finetune_logic.generate_validation_preview_sample",
+                side_effect=torch.OutOfMemoryError("CUDA out of memory"),
+            ), self.assertRaises(torch.OutOfMemoryError):
+                callback.on_log(None, state, None, logs={"loss": 1.0}, model=model)
+            self.assertTrue(model.training)
+            saved = (Path(directory) / "validation_previews" / "latest.json").read_text()
+            self.assertIn('"status": "failed"', saved)
+            self.assertIn("CUDA out of memory", saved)
 
     def test_vision_module_detection_uses_configured_attribute_names(self) -> None:
         model = _MultimodalModel()

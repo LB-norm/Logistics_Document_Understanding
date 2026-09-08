@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "name": "qwen35-27b-memory-tests",
+  "description": "Four short NF4/INT8 and image-resolution probes. Run with --continue-on-error to attempt all tests even after OOM.",
+  "experiments": [
+    {
+      "config": "01_nf4_default.json",
+      "enabled": true
+    },
+    {
+      "config": "02_nf4_high.json",
+      "enabled": true
+    },
+    {
+      "config": "03_int8_default.json",
+      "enabled": true
+    },
+    {
+      "config": "04_int8_high.json",
+      "enabled": true
+    }
+  ]
+}
