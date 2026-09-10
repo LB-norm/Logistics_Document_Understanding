@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "name": "qwen35-model-size-screening-untruncated",
-  "description": "Qwen3.5 4B, 9B, and 27B screening on one 96 GB GPU using the shared frozen-vision NF4 QLoRA rank-16 recipe without sequence truncation.",
+  "description": "Qwen3.5 4B, 9B, and 27B size comparison on one 96 GB GPU using the default 10-epoch frozen-vision NF4 QLoRA rank-16 recipe with cosine decay and 5% warmup.",
   "experiments": [
     {
       "config": "qwen35_4b_qlora_r16.json",

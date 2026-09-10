@@ -72,6 +72,33 @@ class QwenExperimentConfigTests(unittest.TestCase):
 
 
 class QwenExperimentQueueTests(unittest.TestCase):
+    def test_size_queue_uses_the_default_ten_epoch_cosine_recipe(self) -> None:
+        queue_path = Path(__file__).resolve().parents[1] / "experiments/qwen/queue.json"
+        queue = load_experiment_queue(queue_path)
+        expected_models = [
+            "Qwen/Qwen3.5-4B",
+            "Qwen/Qwen3.5-9B",
+            "Qwen/Qwen3.5-27B",
+        ]
+
+        self.assertEqual(len(queue.entries), len(expected_models))
+        for entry, model_id in zip(queue.entries, expected_models, strict=True):
+            self.assertTrue(entry.enabled)
+            args = parse_training_args(
+                ["--config", str(entry.config_path)],
+                defaults=DEFAULT_TRAINING_CONFIG,
+            )
+            validate_training_options(args)
+            self.assertEqual(args.model_id, model_id)
+            self.assertTrue(args.load_in_4bit)
+            self.assertEqual(args.bnb_4bit_quant_type, "nf4")
+            self.assertEqual(args.resolution, "medium")
+            self.assertEqual(args.num_train_epochs, 10.0)
+            self.assertEqual(args.learning_rate, 5e-5)
+            self.assertEqual(args.weight_decay, 0.01)
+            self.assertEqual(args.lr_scheduler_type, "cosine")
+            self.assertEqual(args.warmup_ratio, 0.05)
+
     def test_memory_queue_varies_only_weight_quantization_and_resolution(self) -> None:
         queue_path = Path(__file__).resolve().parents[1] / "experiments/qwen/memory_tests/queue.json"
         queue = load_experiment_queue(queue_path)

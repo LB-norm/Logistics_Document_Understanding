@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "name": "qwen35-27b-qlora-r16-screening-untruncated",
-  "description": "Model-size screening rerun: Qwen3.5 27B with the original frozen-vision QLoRA rank-16 recipe and no training sequence truncation.",
+  "description": "Model-size comparison: Qwen3.5 27B with the default frozen-vision NF4 QLoRA rank-16 recipe and no training sequence truncation.",
   "training": {
     "model_id": "Qwen/Qwen3.5-27B",
     "model_class": "auto",
@@ -13,10 +13,11 @@
     "per_device_train_batch_size": 1,
     "per_device_eval_batch_size": 1,
     "gradient_accumulation_steps": 8,
-    "num_train_epochs": 5.0,
-    "learning_rate": 0.0001,
+    "num_train_epochs": 10.0,
+    "learning_rate": 0.00005,
     "weight_decay": 0.01,
-    "warmup_ratio": 0.03,
+    "lr_scheduler_type": "cosine",
+    "warmup_ratio": 0.05,
     "lora_r": 16,
     "lora_alpha": 32,
     "lora_dropout": 0.05,

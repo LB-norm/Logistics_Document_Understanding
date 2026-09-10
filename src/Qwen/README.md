@@ -89,6 +89,10 @@ The default configuration is:
 | LoRA targets | all matching language-side linear layers |
 | Vision encoder | frozen |
 | Epochs | 10 |
+| Maximum learning rate | `5e-5` |
+| Learning-rate schedule | cosine decay |
+| Warmup | 5% of optimizer steps |
+| Weight decay | `0.01` |
 | Evaluation and checkpoints | once per epoch |
 | Logging and generated previews | every 50 optimizer steps |
 
@@ -97,7 +101,7 @@ To change one value without editing the launcher:
 ```powershell
 .\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py `
   --num-train-epochs 6 `
-  --learning-rate 5e-5 `
+  --learning-rate 3e-5 `
   --run-name qwen35-2b-six-epochs
 ```
 

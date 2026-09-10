@@ -175,10 +175,25 @@ def parse_args(
             "This is the recommended default for VLM SFT."
         ),
     )
-    parser.add_argument("--num-train-epochs", type=float, default=3.0, help="Training epochs.")
-    parser.add_argument("--learning-rate", type=float, default=2e-4, help="Initial learning rate.")
+    parser.add_argument("--num-train-epochs", type=float, default=10.0, help="Training epochs.")
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=5e-5,
+        help="Maximum learning rate reached after warmup.",
+    )
     parser.add_argument("--weight-decay", type=float, default=0.01, help="AdamW weight decay.")
-    parser.add_argument("--warmup-ratio", type=float, default=0.03, help="Warmup ratio.")
+    parser.add_argument(
+        "--lr-scheduler-type",
+        default="cosine",
+        help="Transformers learning-rate scheduler type.",
+    )
+    parser.add_argument(
+        "--warmup-ratio",
+        type=float,
+        default=0.05,
+        help="Fraction of optimizer steps used for learning-rate warmup.",
+    )
     parser.add_argument("--per-device-train-batch-size", type=int, default=1, help="Train batch size per GPU.")
     parser.add_argument("--per-device-eval-batch-size", type=int, default=1, help="Eval batch size per GPU.")
     parser.add_argument(
@@ -1402,6 +1417,8 @@ def validate_training_options(args: argparse.Namespace) -> None:
         raise ValueError("--lora-alpha must be at least 1.")
     if not 0.0 <= args.lora_dropout < 1.0:
         raise ValueError("--lora-dropout must be in the range [0, 1).")
+    if not 0.0 <= args.warmup_ratio < 1.0:
+        raise ValueError("--warmup-ratio must be in the range [0, 1).")
     max_pixels_for_resolution(args.resolution)
     if args.max_length is not None and args.max_length < 1:
         raise ValueError("--max-length must be positive when supplied.")
@@ -1641,6 +1658,7 @@ def build_training_arguments(
         num_train_epochs=args.num_train_epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
+        lr_scheduler_type=args.lr_scheduler_type,
         # Transformers 5.4 removed the deprecated ``warmup_ratio`` argument.
         # ``warmup_steps`` accepts a float in [0, 1) with the same ratio
         # semantics, so keep our stable experiment-facing option and translate

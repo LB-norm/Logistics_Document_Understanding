@@ -63,6 +63,11 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         self.assertEqual(args.compute_dtype, "bfloat16")
         self.assertEqual(args.per_device_train_batch_size, 1)
         self.assertEqual(args.gradient_accumulation_steps, 8)
+        self.assertEqual(args.num_train_epochs, 10.0)
+        self.assertEqual(args.learning_rate, 5e-5)
+        self.assertEqual(args.weight_decay, 0.01)
+        self.assertEqual(args.lr_scheduler_type, "cosine")
+        self.assertEqual(args.warmup_ratio, 0.05)
         self.assertTrue(args.gradient_checkpointing)
         self.assertEqual(args.vision_tuning, "frozen")
         self.assertEqual(args.target_modules, "all-linear")
@@ -111,7 +116,8 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         self.assertEqual(training_args.values["eval_strategy"], "epoch")
         self.assertEqual(training_args.values["save_strategy"], "epoch")
         self.assertEqual(training_args.values["save_total_limit"], 2)
-        self.assertEqual(training_args.values["warmup_steps"], 0.03)
+        self.assertEqual(training_args.values["lr_scheduler_type"], "cosine")
+        self.assertEqual(training_args.values["warmup_steps"], 0.05)
         self.assertNotIn("warmup_ratio", training_args.values)
         self.assertTrue(training_args.values["load_best_model_at_end"])
         self.assertEqual(training_args.values["metric_for_best_model"], "eval_loss")
@@ -122,6 +128,13 @@ class QwenTrainingLauncherTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "best and last"):
             validate_training_options(args)
+
+    def test_warmup_ratio_must_be_a_fraction(self) -> None:
+        for value in ("-0.01", "1.0"):
+            with self.subTest(value=value):
+                args = parse_args(["--warmup-ratio", value])
+                with self.assertRaisesRegex(ValueError, "warmup-ratio"):
+                    validate_training_options(args)
 
     def test_lora_and_qlora_do_not_reset_the_custom_vram_tracker(self) -> None:
         args = parse_args([], defaults=DEFAULT_TRAINING_CONFIG)

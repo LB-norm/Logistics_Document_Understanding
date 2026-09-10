@@ -88,7 +88,9 @@ and description. Their controlled training recipe is:
 - frozen vision encoder and language-side `all-linear` LoRA targets
 - LoRA rank 16, alpha 32, and dropout 0.05
 - physical batch size 1 with 8 gradient accumulation steps
-- five epochs at learning rate `1e-4`
+- ten epochs with a maximum learning rate of `5e-5`
+- cosine learning-rate decay with 5% of optimizer steps used for warmup
+- AdamW weight decay of `0.01`
 - `medium` resolution (2.8 MP maximum), untruncated training sequences, and seed 42
 - 2048-token generation budget for validation previews
 - evaluation and checkpointing after every epoch, retaining the best and last model
@@ -142,8 +144,11 @@ entries.
   "training": {
     "model_id": "Qwen/Qwen3.5-9B",
     "vision_tuning": "frozen",
-    "num_train_epochs": 6.0,
-    "learning_rate": 0.0001,
+    "num_train_epochs": 10.0,
+    "learning_rate": 0.00005,
+    "weight_decay": 0.01,
+    "lr_scheduler_type": "cosine",
+    "warmup_ratio": 0.05,
     "eval_strategy": "epoch",
     "save_strategy": "epoch",
     "save_total_limit": 2,
