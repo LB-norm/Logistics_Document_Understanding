@@ -94,9 +94,31 @@ manifest.
 
 ## Default and challenge test subsets
 
-Held-out model evaluation uses an explicit manifest so that every prediction is
-traceable to one annotation and one distribution. Each record must use exactly
-one of `prediction`/`prediction_path`, exactly one of
+The default held-out test set is
+`data/datasets/250_CMRS_240dpi_20260707/test`. Its ground-truth annotations are
+discovered under `annotations/ground_truths/default` and
+`annotations/ground_truths/challenge`.
+
+Evaluate a model output folder against all 30 test annotations with:
+
+```powershell
+python -m src.eval_suite `
+  --predictions output/qwen/<model-output-folder> `
+  --schema json_schema/content.schema.json `
+  --output output/qwen/<model-output-folder>/testset_evaluation.json
+```
+
+Prediction JSON files are found recursively. They are paired by document name,
+so an inference output such as
+`000d4526-..._CMR_page_3_240dpi.json` matches
+`gt_000d4526-..._CMR_page_3.json`. All annotated samples must have exactly one
+prediction. The annotation key defaults to `content` in this mode; use
+`--prediction-key` for wrapped model outputs and `--testset-path` to override the
+dataset location.
+
+Alternatively, held-out model evaluation can use an explicit manifest so that
+every prediction is traceable to one annotation and one distribution. Each
+record must use exactly one of `prediction`/`prediction_path`, exactly one of
 `ground_truth`/`ground_truth_path`, and set `subset` to either `default` or
 `challenge`. Both subsets must occur in the manifest.
 

@@ -126,6 +126,43 @@ class QwenExperimentQueueTests(unittest.TestCase):
             })
         self.assertTrue(all(settings == fixed_settings[0] for settings in fixed_settings))
 
+    def test_9b_resolution_queue_varies_only_resolution_from_existing_baseline(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        queue_path = repo_root / "experiments/qwen/resolution_tests/queue.json"
+        baseline_path = repo_root / "experiments/qwen/qwen35_9b_qlora_r16.json"
+        queue = load_experiment_queue(queue_path)
+        baseline_training = load_experiment_config(baseline_path).training
+        expected_resolutions = ["low", "high", "native"]
+
+        self.assertEqual(len(queue.entries), len(expected_resolutions))
+        self.assertNotIn("medium", expected_resolutions)
+        for entry, resolution in zip(
+            queue.entries, expected_resolutions, strict=True
+        ):
+            self.assertTrue(entry.enabled)
+            experiment = load_experiment_config(entry.config_path)
+            args = parse_training_args(
+                ["--config", str(entry.config_path)],
+                defaults=DEFAULT_TRAINING_CONFIG,
+            )
+            validate_training_options(args)
+            self.assertEqual(args.model_id, "Qwen/Qwen3.5-9B")
+            self.assertEqual(args.resolution, resolution)
+            self.assertTrue(args.load_in_4bit)
+            self.assertEqual(args.bnb_4bit_quant_type, "nf4")
+            self.assertEqual(
+                {
+                    key: value
+                    for key, value in experiment.training.items()
+                    if key not in {"resolution", "run_name"}
+                },
+                {
+                    key: value
+                    for key, value in baseline_training.items()
+                    if key not in {"resolution", "run_name"}
+                },
+            )
+
     def test_memory_queue_continues_after_oom_process_failure(self) -> None:
         queue_path = Path(__file__).resolve().parents[1] / "experiments/qwen/memory_tests/queue.json"
         calls = []

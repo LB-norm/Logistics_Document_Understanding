@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
-from .evaluator import JsonEvaluator
+from .evaluator import TEST_SUBSETS, JsonEvaluator
+from .paths import DEFAULT_TESTSET_PATH
+
+
+_DPI_SUFFIX = re.compile(r"_\d+dpi$")
 
 
 def _load_json(path: Path) -> Any:
@@ -37,6 +42,101 @@ def _select(value: Any, key_path: str, *, source: str) -> Any:
             raise KeyError(f"{source} does not contain key path {key_path!r}")
         selected = selected[key]
     return selected
+
+
+def _sample_id(path: Path) -> str:
+    """Return the shared ID used by annotation and inference filenames."""
+    sample_id = path.stem
+    if sample_id.startswith("gt_"):
+        sample_id = sample_id[3:]
+    return _DPI_SUFFIX.sub("", sample_id)
+
+
+def _load_testset_directory(
+    prediction_dir: Path,
+    testset_path: Path,
+    *,
+    prediction_key: str,
+    ground_truth_key: str,
+) -> tuple[list[Any], list[Any], list[str], list[str]]:
+    """Pair a prediction directory with the default/challenge annotations."""
+    if not prediction_dir.is_dir():
+        raise FileNotFoundError(f"Prediction directory not found: {prediction_dir}")
+    if not testset_path.is_dir():
+        raise FileNotFoundError(f"Test-set directory not found: {testset_path}")
+
+    annotation_root = testset_path / "annotations" / "ground_truths"
+    annotation_entries: list[tuple[str, str, Path]] = []
+    for subset in TEST_SUBSETS:
+        subset_dir = annotation_root / subset
+        if not subset_dir.is_dir():
+            raise FileNotFoundError(
+                f"Test-set annotation directory not found: {subset_dir}"
+            )
+        for annotation_path in sorted(subset_dir.glob("*.json")):
+            annotation_entries.append(
+                (_sample_id(annotation_path), subset, annotation_path)
+            )
+    if not annotation_entries:
+        raise ValueError(f"No test-set annotations found under {annotation_root}")
+
+    expected_ids = {sample_id for sample_id, _, _ in annotation_entries}
+    if len(expected_ids) != len(annotation_entries):
+        raise ValueError(f"Duplicate annotation sample IDs found under {annotation_root}")
+
+    predictions_by_id: dict[str, Path] = {}
+    duplicates: dict[str, list[Path]] = {}
+    for prediction_path in sorted(prediction_dir.rglob("*.json")):
+        sample_id = _sample_id(prediction_path)
+        if sample_id not in expected_ids:
+            continue
+        if sample_id in predictions_by_id:
+            duplicates.setdefault(sample_id, [predictions_by_id[sample_id]]).append(
+                prediction_path
+            )
+        else:
+            predictions_by_id[sample_id] = prediction_path
+    if duplicates:
+        details = "; ".join(
+            f"{sample_id}: {', '.join(str(path) for path in paths)}"
+            for sample_id, paths in sorted(duplicates.items())
+        )
+        raise ValueError(f"Multiple predictions found for test sample(s): {details}")
+
+    missing_ids = sorted(expected_ids - predictions_by_id.keys())
+    if missing_ids:
+        preview = ", ".join(missing_ids[:5])
+        remainder = len(missing_ids) - 5
+        if remainder > 0:
+            preview += f", ... ({remainder} more)"
+        raise FileNotFoundError(
+            f"Missing predictions for {len(missing_ids)} test sample(s) in "
+            f"{prediction_dir}: {preview}"
+        )
+
+    predictions: list[Any] = []
+    ground_truths: list[Any] = []
+    sample_ids: list[str] = []
+    subset_labels: list[str] = []
+    for sample_id, subset, annotation_path in annotation_entries:
+        prediction_path = predictions_by_id[sample_id]
+        predictions.append(
+            _select(
+                _load_json(prediction_path),
+                prediction_key,
+                source=str(prediction_path),
+            )
+        )
+        ground_truths.append(
+            _select(
+                _load_json(annotation_path),
+                ground_truth_key,
+                source=str(annotation_path),
+            )
+        )
+        sample_ids.append(sample_id)
+        subset_labels.append(subset)
+    return predictions, ground_truths, sample_ids, subset_labels
 
 
 def _pair_value(
@@ -93,6 +193,15 @@ def parse_args() -> argparse.Namespace:
             "subset as 'default' or 'challenge'; both subsets must be present."
         ),
     )
+    inputs.add_argument(
+        "--predictions",
+        type=Path,
+        metavar="DIRECTORY",
+        help=(
+            "Directory containing one JSON prediction per test image. Files are "
+            "matched recursively to the default/challenge ground truths by name."
+        ),
+    )
     inputs.add_argument("--prediction", type=Path, help="One predicted JSON file.")
     parser.add_argument(
         "--ground-truth",
@@ -101,14 +210,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--schema", type=Path, help="Optional target JSON Schema.")
     parser.add_argument(
+        "--testset-path",
+        type=Path,
+        default=DEFAULT_TESTSET_PATH,
+        help=f"Test-set root used with --predictions (default: {DEFAULT_TESTSET_PATH}).",
+    )
+    parser.add_argument(
         "--prediction-key",
         default="root",
         help="Optional dotted path to the predicted object inside each input (default: root).",
     )
     parser.add_argument(
         "--ground-truth-key",
-        default="root",
-        help="Optional dotted path such as 'content' inside each annotation (default: root).",
+        default=None,
+        help=(
+            "Optional dotted path inside each annotation. Defaults to 'content' with "
+            "--predictions and to 'root' for the other input modes."
+        ),
     )
     parser.add_argument("--output", type=Path, help="Optional report output path.")
     parser.add_argument(
@@ -125,9 +243,26 @@ def main() -> int:
         raise ValueError("--ground-truth is required with --prediction")
     schema = _load_json(args.schema) if args.schema else None
     evaluator = JsonEvaluator(schema=schema)
+    ground_truth_key = args.ground_truth_key
+    if ground_truth_key is None:
+        ground_truth_key = "content" if args.predictions is not None else "root"
 
-    pairs_path = args.testset_pairs or args.pairs
-    if pairs_path:
+    if args.predictions is not None:
+        predictions, ground_truths, sample_ids, subset_labels = (
+            _load_testset_directory(
+                args.predictions,
+                args.testset_path,
+                prediction_key=args.prediction_key,
+                ground_truth_key=ground_truth_key,
+            )
+        )
+        report = evaluator.evaluate_testset(
+            predictions,
+            ground_truths,
+            subset_labels=subset_labels,
+            sample_ids=sample_ids,
+        )
+    elif pairs_path := args.testset_pairs or args.pairs:
         records = _load_jsonl(pairs_path)
         predictions = [
             _pair_value(
@@ -145,7 +280,7 @@ def main() -> int:
                 record,
                 value_key="ground_truth",
                 path_key="ground_truth_path",
-                key_path=args.ground_truth_key,
+                key_path=ground_truth_key,
                 manifest_path=pairs_path,
                 record_number=index,
             )
@@ -190,7 +325,7 @@ def main() -> int:
             [
                 _select(
                     _load_json(args.ground_truth),
-                    args.ground_truth_key,
+                    ground_truth_key,
                     source=str(args.ground_truth),
                 )
             ],

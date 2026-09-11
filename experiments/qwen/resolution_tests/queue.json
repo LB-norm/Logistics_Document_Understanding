@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "name": "qwen35-9b-image-resolution-study",
+  "description": "Qwen3.5 9B image-resolution comparison using the default 10-epoch frozen-vision NF4 QLoRA rank-16 recipe. Medium is omitted because its completed model-size-screening run is the baseline.",
+  "experiments": [
+    {
+      "config": "01_low.json",
+      "enabled": true
+    },
+    {
+      "config": "02_high.json",
+      "enabled": true
+    },
+    {
+      "config": "03_native.json",
+      "enabled": true
+    }
+  ]
+}

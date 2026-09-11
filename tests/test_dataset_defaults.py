@@ -9,6 +9,7 @@ from src.PP_parser.PPStructureV3_parser import DEFAULT_IMAGE_PATH as PP_IMAGE_PA
 from src.PP_parser.prepare_finetune import DEFAULT_DATASET_ROOT as PP_ROOT
 from src.Qwen.qwen_finetune_logic import DEFAULT_DATASET_ROOT as QWEN_LOGIC_ROOT
 from src.Qwen.run_qwen_training import DEFAULT_TRAINING_CONFIG as QWEN_CONFIG
+from src.eval_suite import DEFAULT_TESTSET_PATH
 from src.utils.annotation_audit import DEFAULT_DATASET_ROOT as AUDIT_ROOT
 from src.utils.normalize_gross_weights import DEFAULT_DATASET_ROOT as NORMALIZE_ROOT
 from src.utils.prediction_review import DEFAULT_DATASET_ROOT as REVIEW_ROOT
@@ -31,6 +32,7 @@ class DatasetDefaultTests(unittest.TestCase):
 
         self.assertEqual(defaults, {expected})
         self.assertTrue(PP_IMAGE_PATH.is_relative_to(expected))
+        self.assertEqual(DEFAULT_TESTSET_PATH, expected / "test")
 
 
 if __name__ == "__main__":

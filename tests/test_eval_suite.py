@@ -266,6 +266,87 @@ class JsonEvaluatorTests(unittest.TestCase):
                 rendered["subsets"]["challenge"]["summary"]["field_f1"], 0.0
             )
 
+    def test_testset_cli_discovers_default_annotations_for_prediction_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            testset = root / "test"
+            predictions = root / "output" / "model" / "test"
+            default_annotations = (
+                testset / "annotations" / "ground_truths" / "default"
+            )
+            challenge_annotations = (
+                testset / "annotations" / "ground_truths" / "challenge"
+            )
+            default_annotations.mkdir(parents=True)
+            challenge_annotations.mkdir(parents=True)
+            predictions.mkdir(parents=True)
+
+            (default_annotations / "gt_default-document.json").write_text(
+                '{"content": {"value": "A"}}', encoding="utf-8"
+            )
+            (challenge_annotations / "gt_challenge-document.json").write_text(
+                '{"content": {"value": "B"}}', encoding="utf-8"
+            )
+            (predictions / "default-document_240dpi.json").write_text(
+                '{"value": "A"}', encoding="utf-8"
+            )
+            (predictions / "challenge-document_240dpi.json").write_text(
+                '{"value": "B"}', encoding="utf-8"
+            )
+            output = root / "evaluation.json"
+
+            argv = [
+                "eval_suite",
+                "--predictions",
+                str(predictions.parent),
+                "--testset-path",
+                str(testset),
+                "--output",
+                str(output),
+            ]
+            with patch.object(sys, "argv", argv):
+                self.assertEqual(eval_main(), 0)
+
+            rendered = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(rendered["overall"]["summary"]["samples"], 2)
+            self.assertEqual(
+                rendered["subsets"]["default"]["summary"]["field_f1"], 1.0
+            )
+            self.assertEqual(
+                rendered["subsets"]["challenge"]["summary"]["field_f1"], 1.0
+            )
+
+    def test_prediction_folder_evaluation_requires_every_test_annotation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            testset = root / "test"
+            predictions = root / "predictions"
+            for subset in ("default", "challenge"):
+                annotation_dir = (
+                    testset / "annotations" / "ground_truths" / subset
+                )
+                annotation_dir.mkdir(parents=True)
+                (annotation_dir / f"gt_{subset}-document.json").write_text(
+                    '{"content": {"value": "A"}}', encoding="utf-8"
+                )
+            predictions.mkdir()
+            (predictions / "default-document_240dpi.json").write_text(
+                '{"value": "A"}', encoding="utf-8"
+            )
+
+            argv = [
+                "eval_suite",
+                "--predictions",
+                str(predictions),
+                "--testset-path",
+                str(testset),
+            ]
+            with patch.object(sys, "argv", argv):
+                with self.assertRaisesRegex(
+                    FileNotFoundError, "Missing predictions for 1 test sample"
+                ):
+                    eval_main()
+
 
 if __name__ == "__main__":
     unittest.main()

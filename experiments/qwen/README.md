@@ -7,6 +7,10 @@ different for a particular run.
 For short 27B NF4/INT8 capacity probes at two image resolutions, see the
 separate [memory-test queue](memory_tests/README.md).
 
+For the Qwen3.5 9B image-resolution comparison, see the separate
+[resolution-study queue](resolution_tests/README.md). It trains the `low`,
+`high`, and `native` variants and reuses the existing `medium` run as baseline.
+
 The current queue runs the model-size screening campaign for the official Qwen3.5
 4B, 9B, and 27B checkpoints sequentially with the same frozen-vision NF4 QLoRA
 rank-16 recipe. Training sequence truncation is disabled. The non-quantized BF16
