@@ -18,6 +18,16 @@ from .schema import validate_json_schema
 
 _MISSING = object()
 _ARRAY_INDEX = re.compile(r"\[\d+\]")
+TEST_SUBSETS = ("default", "challenge")
+_HEADLINE_METRICS = (
+    "parse_rate",
+    "schema_valid_rate",
+    "document_exact_match_rate",
+    "field_precision",
+    "field_recall",
+    "field_f1",
+    "value_similarity",
+)
 
 
 def _flatten_leaves(value: Any, path: str = "$") -> dict[str, Any]:
@@ -110,6 +120,7 @@ class SampleEvaluation:
     schema_valid: bool | None
     document_exact_match: bool
     field_counts: FieldCounts
+    subset: str | None = None
     field_breakdown: dict[str, FieldCounts] = field(default_factory=dict)
     parse_error: str | None = None
     schema_errors: list[str] = field(default_factory=list)
@@ -117,6 +128,7 @@ class SampleEvaluation:
     def to_dict(self) -> dict[str, Any]:
         return {
             "sample_id": self.sample_id,
+            "subset": self.subset,
             "parse_valid": self.parse_valid,
             "schema_valid": self.schema_valid,
             "document_exact_match": self.document_exact_match,
@@ -180,18 +192,9 @@ class EvaluationReport:
     def training_metrics(self, prefix: str = "json_") -> dict[str, float]:
         """Return the flat numeric subset expected by training frameworks."""
         summary = self.summary()
-        names = (
-            "parse_rate",
-            "schema_valid_rate",
-            "document_exact_match_rate",
-            "field_precision",
-            "field_recall",
-            "field_f1",
-            "value_similarity",
-        )
         return {
             f"{prefix}{name}": float(summary[name])
-            for name in names
+            for name in _HEADLINE_METRICS
             if summary[name] is not None
         }
 
@@ -202,6 +205,48 @@ class EvaluationReport:
         }
         if include_samples:
             result["samples"] = [sample.to_dict() for sample in self.samples]
+        return result
+
+
+@dataclass
+class TestsetEvaluationReport:
+    """Overall and distribution-specific reports for the held-out test set."""
+
+    overall: EvaluationReport
+    subsets: dict[str, EvaluationReport]
+
+    def comparison(self) -> dict[str, float | None]:
+        """Return challenge minus default for every headline metric.
+
+        Negative extraction-quality values mean that performance is lower on the
+        challenge subset. ``None`` is retained for metrics such as schema validity
+        when no schema was supplied.
+        """
+        default = self.subsets["default"].summary()
+        challenge = self.subsets["challenge"].summary()
+        return {
+            name: (
+                float(challenge[name]) - float(default[name])
+                if challenge[name] is not None and default[name] is not None
+                else None
+            )
+            for name in _HEADLINE_METRICS
+        }
+
+    def to_dict(self, *, include_samples: bool = True) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "overall": self.overall.to_dict(include_samples=False),
+            "subsets": {
+                name: report.to_dict(include_samples=False)
+                for name, report in self.subsets.items()
+            },
+            "comparison": {
+                "definition": "challenge_minus_default",
+                "metrics": self.comparison(),
+            },
+        }
+        if include_samples:
+            result["samples"] = [sample.to_dict() for sample in self.overall.samples]
         return result
 
 
@@ -289,6 +334,7 @@ class JsonEvaluator:
         ground_truth: Any,
         *,
         sample_id: str | None = None,
+        subset: str | None = None,
     ) -> SampleEvaluation:
         expected = self._parse_ground_truth(ground_truth)
         predicted, parse_valid, parse_error = self._parse_prediction(prediction)
@@ -305,6 +351,7 @@ class JsonEvaluator:
         )
         return SampleEvaluation(
             sample_id=sample_id,
+            subset=subset,
             parse_valid=parse_valid,
             schema_valid=schema_valid,
             document_exact_match=parse_valid and _strict_json_equal(predicted, expected),
@@ -320,6 +367,7 @@ class JsonEvaluator:
         ground_truths: Iterable[Any],
         *,
         sample_ids: Sequence[str] | None = None,
+        subset_labels: Sequence[str] | None = None,
     ) -> EvaluationReport:
         prediction_list = list(predictions)
         ground_truth_list = list(ground_truths)
@@ -327,15 +375,74 @@ class JsonEvaluator:
             raise ValueError("Predictions and ground truths must have the same length.")
         if sample_ids is not None and len(sample_ids) != len(prediction_list):
             raise ValueError("sample_ids must have the same length as predictions.")
+        if subset_labels is not None and len(subset_labels) != len(prediction_list):
+            raise ValueError("subset_labels must have the same length as predictions.")
         ids = sample_ids if sample_ids is not None else [None] * len(prediction_list)
+        subsets = (
+            subset_labels if subset_labels is not None else [None] * len(prediction_list)
+        )
         return EvaluationReport(
             [
-                self.evaluate(prediction, truth, sample_id=sample_id)
-                for prediction, truth, sample_id in zip(
-                    prediction_list, ground_truth_list, ids
+                self.evaluate(
+                    prediction,
+                    truth,
+                    sample_id=sample_id,
+                    subset=subset,
+                )
+                for prediction, truth, sample_id, subset in zip(
+                    prediction_list, ground_truth_list, ids, subsets
                 )
             ]
         )
+
+    def evaluate_testset(
+        self,
+        predictions: Iterable[Any],
+        ground_truths: Iterable[Any],
+        *,
+        subset_labels: Sequence[str],
+        sample_ids: Sequence[str] | None = None,
+    ) -> TestsetEvaluationReport:
+        """Evaluate a test set and report ``default`` and ``challenge`` separately.
+
+        Both subsets must be present. Strict label validation is intentional: a
+        misspelled label must not silently create a third group or contaminate the
+        overall-only result.
+        """
+        normalized_subsets: list[str] = []
+        for index, label in enumerate(subset_labels):
+            if not isinstance(label, str):
+                raise ValueError(f"subset_labels[{index}] must be a string.")
+            normalized = label.strip().casefold()
+            if normalized not in TEST_SUBSETS:
+                allowed = ", ".join(TEST_SUBSETS)
+                raise ValueError(
+                    f"Unknown test subset {label!r}; expected one of: {allowed}."
+                )
+            normalized_subsets.append(normalized)
+
+        missing = set(TEST_SUBSETS) - set(normalized_subsets)
+        if missing:
+            raise ValueError(
+                "Test-set evaluation requires both subsets; missing: "
+                + ", ".join(sorted(missing))
+            )
+        if sample_ids is not None and len(set(sample_ids)) != len(sample_ids):
+            raise ValueError("sample_ids must be unique for test-set evaluation.")
+
+        overall = self.evaluate_batch(
+            predictions,
+            ground_truths,
+            sample_ids=sample_ids,
+            subset_labels=normalized_subsets,
+        )
+        grouped = {
+            subset: EvaluationReport(
+                [sample for sample in overall.samples if sample.subset == subset]
+            )
+            for subset in TEST_SUBSETS
+        }
+        return TestsetEvaluationReport(overall=overall, subsets=grouped)
 
 
 def evaluate_json(
@@ -362,4 +469,23 @@ def evaluate_batch(
     evaluator = JsonEvaluator(schema=schema, normalization=normalization)
     return evaluator.evaluate_batch(
         predictions, ground_truths, sample_ids=sample_ids
+    ).to_dict()
+
+
+def evaluate_testset(
+    predictions: Iterable[Any],
+    ground_truths: Iterable[Any],
+    *,
+    subset_labels: Sequence[str],
+    sample_ids: Sequence[str] | None = None,
+    schema: Any | None = None,
+    normalization: NormalizationConfig | None = None,
+) -> dict[str, Any]:
+    """Convenience function for default/challenge test-set evaluation."""
+    evaluator = JsonEvaluator(schema=schema, normalization=normalization)
+    return evaluator.evaluate_testset(
+        predictions,
+        ground_truths,
+        subset_labels=subset_labels,
+        sample_ids=sample_ids,
     ).to_dict()

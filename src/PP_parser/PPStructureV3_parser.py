@@ -21,11 +21,11 @@ DEFAULT_IMAGE_PATH = (
     REPO_ROOT
     / "data"
     / "datasets"
-    / "raw_data_20260527"
+    / "250_CMRS_240dpi_20260707"
     / "train"
     / "images"
-    / "cmr_dachser"
-    / "3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1.jpg"
+    / "images"
+    / "3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1_240dpi.png"
 )
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "output" / "paddleocr_vl"
 DEFAULT_VIS_DIR = DEFAULT_OUTPUT_DIR / "vis"

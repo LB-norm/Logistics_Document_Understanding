@@ -47,7 +47,7 @@ Dry run:
 
 ```bash
 python3 src/PP_parser/prepare_finetune.py \
-  --dataset-root data/datasets/raw_data_20260527 \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707 \
   --dry-run
 ```
 
@@ -55,7 +55,7 @@ Write a prepared dataset:
 
 ```bash
 python3 src/PP_parser/prepare_finetune.py \
-  --dataset-root data/datasets/raw_data_20260527 \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707 \
   --output-dir data/pp_ocr_vl_sft \
   --overwrite
 ```

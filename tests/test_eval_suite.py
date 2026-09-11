@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.eval_suite import (
     JsonEvaluator,
     NormalizationConfig,
+    evaluate_testset,
     make_compute_metrics,
     validate_json_schema,
 )
+from src.eval_suite.__main__ import main as eval_main
 
 
 class JsonEvaluatorTests(unittest.TestCase):
@@ -158,6 +164,107 @@ class JsonEvaluatorTests(unittest.TestCase):
             [{"sender": "acme"}], [{"sender": "ACME"}]
         ).summary()
         self.assertEqual(summary["field_f1"], 0.0)
+
+    def test_testset_report_separates_default_and_challenge(self) -> None:
+        report = JsonEvaluator().evaluate_testset(
+            [{"value": "correct"}, {"value": "wrong"}],
+            [{"value": "correct"}, {"value": "correct"}],
+            subset_labels=["default", "challenge"],
+            sample_ids=["regular-1", "irregular-1"],
+        )
+        rendered = report.to_dict()
+
+        self.assertEqual(rendered["overall"]["summary"]["samples"], 2)
+        self.assertEqual(rendered["subsets"]["default"]["summary"]["field_f1"], 1.0)
+        self.assertEqual(rendered["subsets"]["challenge"]["summary"]["field_f1"], 0.0)
+        self.assertEqual(
+            rendered["comparison"]["metrics"]["field_f1"], -1.0
+        )
+        self.assertEqual(
+            [sample["subset"] for sample in rendered["samples"]],
+            ["default", "challenge"],
+        )
+
+    def test_testset_requires_both_known_subsets(self) -> None:
+        evaluator = JsonEvaluator()
+        with self.assertRaisesRegex(ValueError, "Unknown test subset"):
+            evaluator.evaluate_testset(
+                [{"value": 1}, {"value": 1}],
+                [{"value": 1}, {"value": 1}],
+                subset_labels=["default", "hard"],
+            )
+        with self.assertRaisesRegex(ValueError, "missing: challenge"):
+            evaluator.evaluate_testset(
+                [{"value": 1}],
+                [{"value": 1}],
+                subset_labels=["default"],
+            )
+
+    def test_testset_convenience_function(self) -> None:
+        rendered = evaluate_testset(
+            [{"value": 1}, {"value": 1}],
+            [{"value": 1}, {"value": 1}],
+            subset_labels=["DEFAULT", " challenge "],
+        )
+        self.assertEqual(rendered["subsets"]["default"]["summary"]["samples"], 1)
+        self.assertEqual(rendered["subsets"]["challenge"]["summary"]["samples"], 1)
+
+    def test_testset_cli_loads_relative_prediction_and_annotation_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            prediction_default = root / "prediction-default.json"
+            prediction_challenge = root / "prediction-challenge.json"
+            annotation_default = root / "annotation-default.json"
+            annotation_challenge = root / "annotation-challenge.json"
+            manifest = root / "testset.jsonl"
+            output = root / "report.json"
+
+            prediction_default.write_text('{"value": "A"}', encoding="utf-8")
+            prediction_challenge.write_text('{"value": "B"}', encoding="utf-8")
+            annotation_default.write_text(
+                '{"content": {"value": "A"}}', encoding="utf-8"
+            )
+            annotation_challenge.write_text(
+                '{"content": {"value": "A"}}', encoding="utf-8"
+            )
+            rows = [
+                {
+                    "sample_id": "default-1",
+                    "subset": "default",
+                    "prediction_path": prediction_default.name,
+                    "ground_truth_path": annotation_default.name,
+                },
+                {
+                    "sample_id": "challenge-1",
+                    "subset": "challenge",
+                    "prediction_path": prediction_challenge.name,
+                    "ground_truth_path": annotation_challenge.name,
+                },
+            ]
+            manifest.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+
+            argv = [
+                "eval_suite",
+                "--testset-pairs",
+                str(manifest),
+                "--ground-truth-key",
+                "content",
+                "--output",
+                str(output),
+            ]
+            with patch.object(sys, "argv", argv):
+                self.assertEqual(eval_main(), 0)
+
+            rendered = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(
+                rendered["subsets"]["default"]["summary"]["field_f1"], 1.0
+            )
+            self.assertEqual(
+                rendered["subsets"]["challenge"]["summary"]["field_f1"], 0.0
+            )
 
 
 if __name__ == "__main__":

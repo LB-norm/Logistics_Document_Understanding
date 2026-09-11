@@ -5,8 +5,11 @@ from .evaluator import (
     FieldCounts,
     JsonEvaluator,
     SampleEvaluation,
+    TEST_SUBSETS,
+    TestsetEvaluationReport,
     evaluate_batch,
     evaluate_json,
+    evaluate_testset,
 )
 from .integrations import make_compute_metrics
 from .normalization import NormalizationConfig
@@ -18,8 +21,11 @@ __all__ = [
     "JsonEvaluator",
     "NormalizationConfig",
     "SampleEvaluation",
+    "TEST_SUBSETS",
+    "TestsetEvaluationReport",
     "evaluate_batch",
     "evaluate_json",
+    "evaluate_testset",
     "make_compute_metrics",
     "validate_json_schema",
 ]

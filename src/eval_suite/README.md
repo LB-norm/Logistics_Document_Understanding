@@ -87,3 +87,49 @@ For a batch, provide JSONL records containing `sample_id`, `prediction`, and
 ```powershell
 python -m src.eval_suite --pairs evaluation_pairs.jsonl --schema json_schema/content.schema.json
 ```
+
+`prediction_path` and `ground_truth_path` may be used instead of embedding the
+JSON values. Relative paths are resolved from the directory containing the JSONL
+manifest.
+
+## Default and challenge test subsets
+
+Held-out model evaluation uses an explicit manifest so that every prediction is
+traceable to one annotation and one distribution. Each record must use exactly
+one of `prediction`/`prediction_path`, exactly one of
+`ground_truth`/`ground_truth_path`, and set `subset` to either `default` or
+`challenge`. Both subsets must occur in the manifest.
+
+```jsonl
+{"sample_id":"regular-001","subset":"default","prediction_path":"predictions/default/regular-001.json","ground_truth_path":"annotations/default/regular-001.json"}
+{"sample_id":"irregular-001","subset":"challenge","prediction_path":"predictions/challenge/irregular-001.json","ground_truth_path":"annotations/challenge/irregular-001.json"}
+```
+
+Evaluate the manifest with:
+
+```powershell
+python -m src.eval_suite `
+  --testset-pairs testset_pairs.jsonl `
+  --ground-truth-key content `
+  --schema json_schema/content.schema.json `
+  --output testset_evaluation.json
+```
+
+For plain Qwen output files, the default `--prediction-key root` is appropriate.
+For a wrapped Donut inference artifact, add the dotted path that reaches its
+content object, for example `--prediction-key generated.guided_prediction` (or
+`generated.guided_prediction.content` for artifacts whose template contains a
+top-level `content` wrapper).
+
+The test-set report contains:
+
+- `overall`: metrics and field breakdown over the complete test set;
+- `subsets.default` and `subsets.challenge`: independently aggregated metrics
+  and field breakdowns;
+- `comparison.metrics`: challenge minus default for each headline metric, so a
+  negative field-F1 value denotes degradation on irregular documents;
+- `samples`: traceable per-document outcomes with their subset labels (omitted
+  with `--summary-only`).
+
+The same behavior is available through `JsonEvaluator.evaluate_testset(...)` or
+the `evaluate_testset(...)` convenience function.

@@ -11,7 +11,9 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATASET_ROOT = REPO_ROOT / "data" / "datasets" / "raw_data_20260527"
+DEFAULT_DATASET_ROOT = (
+    REPO_ROOT / "data" / "datasets" / "250_CMRS_240dpi_20260707"
+)
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "pp_ocr_vl_sft"
 DEFAULT_ANNOTATION_TARGET_KEY = "content"
 DEFAULT_PROMPT = (

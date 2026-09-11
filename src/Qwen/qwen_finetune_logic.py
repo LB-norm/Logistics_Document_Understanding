@@ -23,7 +23,9 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATASET_ROOT = REPO_ROOT / "data" / "datasets" / "raw_data_20260527"
+DEFAULT_DATASET_ROOT = (
+    REPO_ROOT / "data" / "datasets" / "250_CMRS_240dpi_20260707"
+)
 DEFAULT_SCHEMA_PATH = REPO_ROOT / "json_schema" / "content.schema.json"
 DEFAULT_MODEL_ID = "Qwen/Qwen3.5-2B"
 DEFAULT_RUNS_DIR = REPO_ROOT / "runs" / "qwen"

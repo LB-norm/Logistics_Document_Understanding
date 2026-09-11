@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "src/Donut/lieferschein.schema.json",
   "title": "CMR Lieferschein Annotation Output",
-  "description": "Validation schema for the structured CMR/Lieferschein annotations in data/datasets/raw_data_20260527. The extraction payload lives under content; metadata mirrors the stored annotation files and describes annotation provenance.",
+  "description": "Validation schema for the structured CMR/Lieferschein annotations in data/datasets/250_CMRS_240dpi_20260707. The extraction payload lives under content; metadata mirrors the stored annotation files and describes annotation provenance.",
   "type": "object",
   "additionalProperties": false,
   "required": [

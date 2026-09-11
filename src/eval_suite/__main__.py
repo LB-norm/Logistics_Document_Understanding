@@ -39,6 +39,39 @@ def _select(value: Any, key_path: str, *, source: str) -> Any:
     return selected
 
 
+def _pair_value(
+    record: dict[str, Any],
+    *,
+    value_key: str,
+    path_key: str,
+    key_path: str,
+    manifest_path: Path,
+    record_number: int,
+) -> Any:
+    """Load an embedded pair value or a JSON file referenced by the manifest."""
+    present = [key for key in (value_key, path_key) if key in record]
+    if len(present) != 1:
+        raise ValueError(
+            f"Pair record {record_number} must contain exactly one of "
+            f"{value_key!r} or {path_key!r}."
+        )
+    if value_key in record:
+        value = record[value_key]
+        source = f"{manifest_path}:{record_number}:{value_key}"
+    else:
+        raw_path = record[path_key]
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ValueError(
+                f"Pair record {record_number} field {path_key!r} must be a path string."
+            )
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = manifest_path.parent / path
+        value = _load_json(path)
+        source = str(path)
+    return _select(value, key_path, source=source)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compare predicted JSON with annotated ground-truth JSON."
@@ -48,8 +81,16 @@ def parse_args() -> argparse.Namespace:
         "--pairs",
         type=Path,
         help=(
-            "JSONL file with prediction and ground_truth fields and an optional "
-            "sample_id field. A prediction may itself be a JSON string."
+            "JSONL file with embedded prediction/ground_truth values or "
+            "prediction_path/ground_truth_path references and an optional sample_id."
+        ),
+    )
+    inputs.add_argument(
+        "--testset-pairs",
+        type=Path,
+        help=(
+            "JSONL manifest for held-out evaluation. Every row must identify its "
+            "subset as 'default' or 'challenge'; both subsets must be present."
         ),
     )
     inputs.add_argument("--prediction", type=Path, help="One predicted JSON file.")
@@ -85,25 +126,58 @@ def main() -> int:
     schema = _load_json(args.schema) if args.schema else None
     evaluator = JsonEvaluator(schema=schema)
 
-    if args.pairs:
-        records = _load_jsonl(args.pairs)
-        for index, record in enumerate(records, start=1):
-            missing = {"prediction", "ground_truth"} - record.keys()
-            if missing:
+    pairs_path = args.testset_pairs or args.pairs
+    if pairs_path:
+        records = _load_jsonl(pairs_path)
+        predictions = [
+            _pair_value(
+                record,
+                value_key="prediction",
+                path_key="prediction_path",
+                key_path=args.prediction_key,
+                manifest_path=pairs_path,
+                record_number=index,
+            )
+            for index, record in enumerate(records, start=1)
+        ]
+        ground_truths = [
+            _pair_value(
+                record,
+                value_key="ground_truth",
+                path_key="ground_truth_path",
+                key_path=args.ground_truth_key,
+                manifest_path=pairs_path,
+                record_number=index,
+            )
+            for index, record in enumerate(records, start=1)
+        ]
+        sample_ids = [
+            str(record.get("sample_id", index))
+            for index, record in enumerate(records, start=1)
+        ]
+        if args.testset_pairs:
+            missing_subset = [
+                index
+                for index, record in enumerate(records, start=1)
+                if "subset" not in record
+            ]
+            if missing_subset:
                 raise ValueError(
-                    f"Pair record {index} is missing: {', '.join(sorted(missing))}"
+                    "Every test-set pair requires a subset; missing in record(s): "
+                    + ", ".join(map(str, missing_subset))
                 )
-        report = evaluator.evaluate_batch(
-            [
-                _select(record["prediction"], args.prediction_key, source="prediction")
-                for record in records
-            ],
-            [
-                _select(record["ground_truth"], args.ground_truth_key, source="ground truth")
-                for record in records
-            ],
-            sample_ids=[str(record.get("sample_id", index)) for index, record in enumerate(records)],
-        )
+            report = evaluator.evaluate_testset(
+                predictions,
+                ground_truths,
+                subset_labels=[record["subset"] for record in records],
+                sample_ids=sample_ids,
+            )
+        else:
+            report = evaluator.evaluate_batch(
+                predictions,
+                ground_truths,
+                sample_ids=sample_ids,
+            )
     else:
         report = evaluator.evaluate_batch(
             [

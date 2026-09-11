@@ -29,7 +29,7 @@ from src.eval_suite.normalization import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASET_NAME = "250_CMRS_240dpi_20260707"
-DEFAULT_DATASET_ROOT = REPO_ROOT / "data" / "datasets" / DATASET_NAME / DATASET_NAME
+DEFAULT_DATASET_ROOT = REPO_ROOT / "data" / "datasets" / DATASET_NAME
 DEFAULT_PREDICTION_ROOT = REPO_ROOT / "output" / "qwen" / "qwen35-9b-best"
 DEFAULT_OUTPUT_PATH = DEFAULT_PREDICTION_ROOT / "review.html"
 DEFAULT_TEMPLATE_PATH = REPO_ROOT / "json_schema" / "content.empty.json"
