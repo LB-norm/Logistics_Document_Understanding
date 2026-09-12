@@ -72,32 +72,49 @@ class QwenExperimentConfigTests(unittest.TestCase):
 
 
 class QwenExperimentQueueTests(unittest.TestCase):
-    def test_size_queue_uses_the_default_ten_epoch_cosine_recipe(self) -> None:
+    def test_main_queue_contains_the_seven_requested_tuning_methods(self) -> None:
         queue_path = Path(__file__).resolve().parents[1] / "experiments/qwen/queue.json"
         queue = load_experiment_queue(queue_path)
-        expected_models = [
-            "Qwen/Qwen3.5-4B",
-            "Qwen/Qwen3.5-9B",
-            "Qwen/Qwen3.5-27B",
+        expected = [
+            ("qwen35-9b-l1-lora-text", False, "lora", "frozen", "frozen", None),
+            ("qwen35-9b-q2-qlora-multimodal", True, "lora", "lora", "lora", None),
+            ("qwen35-9b-l2-lora-multimodal", False, "lora", "lora", "lora", None),
+            ("qwen35-9b-f1-full-text", False, "full", "frozen", "frozen", None),
+            ("qwen35-9b-f2-full-text-merger", False, "full", "frozen", "full", None),
+            ("qwen35-9b-f3-full-last9", False, "full", "full", "full", 9),
+            ("qwen35-9b-f4-full-all", False, "full", "full", "full", 27),
         ]
 
-        self.assertEqual(len(queue.entries), len(expected_models))
-        for entry, model_id in zip(queue.entries, expected_models, strict=True):
+        self.assertEqual(len(queue.entries), len(expected))
+        for entry, expected_values in zip(queue.entries, expected, strict=True):
             self.assertTrue(entry.enabled)
             args = parse_training_args(
                 ["--config", str(entry.config_path)],
                 defaults=DEFAULT_TRAINING_CONFIG,
             )
             validate_training_options(args)
-            self.assertEqual(args.model_id, model_id)
-            self.assertTrue(args.load_in_4bit)
-            self.assertEqual(args.bnb_4bit_quant_type, "nf4")
+            name, quantized, text, blocks, merger, last_n = expected_values
+            self.assertEqual(args.run_name, name)
+            self.assertEqual(args.model_id, "Qwen/Qwen3.5-9B")
+            self.assertEqual(args.load_in_4bit, quantized)
+            self.assertEqual(args.text_tuning, text)
+            self.assertEqual(args.vision_tuning, blocks)
+            self.assertEqual(args.vision_merger_tuning, merger)
+            self.assertEqual(args.vision_train_last_n_blocks, last_n)
             self.assertEqual(args.resolution, "medium")
             self.assertEqual(args.num_train_epochs, 10.0)
             self.assertEqual(args.learning_rate, 5e-5)
             self.assertEqual(args.weight_decay, 0.01)
             self.assertEqual(args.lr_scheduler_type, "cosine")
             self.assertEqual(args.warmup_ratio, 0.05)
+
+    def test_q1_baseline_is_not_repeated_in_tuning_queue(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        queue = load_experiment_queue(repo_root / "experiments/qwen/tuning_methods/queue.json")
+        baseline = (repo_root / "experiments/qwen/qwen35_9b_qlora_r16.json").resolve()
+
+        self.assertNotIn(baseline, [entry.config_path for entry in queue.entries])
+        self.assertEqual(len(queue.entries), 7)
 
     def test_memory_queue_varies_only_weight_quantization_and_resolution(self) -> None:
         queue_path = Path(__file__).resolve().parents[1] / "experiments/qwen/memory_tests/queue.json"

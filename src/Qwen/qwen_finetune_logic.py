@@ -1,4 +1,4 @@
-"""Reusable Qwen vision-language LoRA/QLoRA fine-tuning logic.
+"""Reusable Qwen vision-language adapter and full fine-tuning logic.
 
 The user-facing defaults live in :mod:`src.Qwen.run_qwen_training`.  Keeping
 this module free of project-machine defaults makes the training path reusable
@@ -62,7 +62,7 @@ def parse_args(
 
     parser = argparse.ArgumentParser(
         description=(
-            "LoRA/QLoRA fine-tune a Qwen-compatible vision-language model on "
+            "Adapter or full fine-tune a Qwen-compatible vision-language model on "
             "a local document information extraction dataset."
         )
     )
@@ -130,7 +130,7 @@ def parse_args(
         type=Path,
         default=None,
         help=(
-            "Directory for checkpoints, metadata, and the final adapter. If omitted, "
+            "Directory for checkpoints, metadata, and the final model or adapter. If omitted, "
             "a timestamped directory is created under --runs-dir."
         ),
     )
@@ -325,13 +325,38 @@ def parse_args(
         ),
     )
     parser.add_argument(
+        "--text-tuning",
+        choices=["lora", "full"],
+        default="lora",
+        help=(
+            "Text-backbone strategy. 'lora' trains adapters; 'full' trains all "
+            "non-vision model parameters and requires an unquantized base model."
+        ),
+    )
+    parser.add_argument(
         "--vision-tuning",
         choices=["frozen", "lora", "full"],
         default="frozen",
         help=(
-            "Vision encoder strategy: 'frozen' trains language-side LoRA only; 'lora' "
-            "also trains LoRA adapters matched inside the vision encoder; 'full' unfreezes "
-            "the vision encoder and therefore requires --no-load-in-4bit."
+            "Vision-block strategy. Patch and positional embeddings stay frozen unless "
+            "text, every block, and the merger are all fully tuned. "
+            "'lora' trains adapters in the selected blocks; 'full' unfreezes their "
+            "base weights and requires an unquantized base model."
+        ),
+    )
+    parser.add_argument(
+        "--vision-merger-tuning",
+        choices=["frozen", "lora", "full"],
+        default="frozen",
+        help="Independent tuning strategy for the vision-to-language merger.",
+    )
+    parser.add_argument(
+        "--vision-train-last-n-blocks",
+        type=int,
+        default=None,
+        help=(
+            "With --vision-tuning full, train only the last N vision blocks. "
+            "Leave unset to train all blocks. The value is checked against the loaded model."
         ),
     )
     parser.add_argument(
@@ -419,7 +444,10 @@ def parse_args(
 
 
 def load_runtime_dependencies(
-    load_in_4bit: bool, load_in_8bit: bool = False,
+    load_in_4bit: bool,
+    load_in_8bit: bool = False,
+    use_peft: bool = True,
+    require_bitsandbytes: bool = False,
 ) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any, Any]:
     missing: list[str] = []
 
@@ -461,12 +489,13 @@ def load_runtime_dependencies(
     try:
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     except ImportError:
-        missing.append("peft")
+        if use_peft:
+            missing.append("peft")
         LoraConfig = None
         get_peft_model = None
         prepare_model_for_kbit_training = None
 
-    if load_in_4bit or load_in_8bit:
+    if load_in_4bit or load_in_8bit or require_bitsandbytes:
         try:
             import bitsandbytes  # noqa: F401
         except ImportError:
@@ -1343,12 +1372,15 @@ def resolve_lora_target_modules(
     vision_module_paths: list[str],
     vision_tuning: str,
     torch: Any,
+    *,
+    text_tuning: str = "lora",
+    vision_lora_module_paths: list[str] | None = None,
 ) -> list[str]:
     """Resolve target names before PEFT so vision inclusion is intentional.
 
     PEFT's ``all-linear`` shortcut also covers a VLM's visual tower. Resolving
-    actual module paths here lets frozen/full modes exclude the tower entirely,
-    while the ``lora`` mode deliberately includes it.
+    actual paths here allows the text backbone, vision blocks, and merger to be
+    included independently while patch/position components remain untouched.
     """
     requested = parse_target_modules(raw_value)
     requested_suffixes = None if requested == "all-linear" else requested
@@ -1377,7 +1409,16 @@ def resolve_lora_target_modules(
     for module_name, module in model.named_modules():
         if not module_name or module is output_embedding or module_name.endswith("lm_head"):
             continue
-        if vision_tuning != "lora" and is_inside_vision(module_name):
+        if is_inside_vision(module_name):
+            if vision_lora_module_paths is None:
+                if vision_tuning != "lora":
+                    continue
+            elif not any(
+                module_name == root or module_name.startswith(root + ".")
+                for root in vision_lora_module_paths
+            ):
+                continue
+        elif text_tuning != "lora":
             continue
         if requested_suffixes is None:
             matches = is_linear_like(module)
@@ -1390,7 +1431,12 @@ def resolve_lora_target_modules(
             resolved.append(module_name)
 
     if not resolved:
-        scope = "language and vision" if vision_tuning == "lora" else "language"
+        scopes = []
+        if text_tuning == "lora":
+            scopes.append("language")
+        if vision_tuning == "lora" or vision_lora_module_paths:
+            scopes.append("vision")
+        scope = " and ".join(scopes) or "requested"
         raise RuntimeError(
             f"No {scope} modules matched --target-modules {raw_value!r}. "
             "Inspect model.named_modules() and provide compatible module suffixes."
@@ -1448,10 +1494,29 @@ def validate_training_options(args: argparse.Namespace) -> None:
             "--save-total-limit must be at least 2 so the best and last resumable "
             "checkpoints are both retained."
         )
-    if args.vision_tuning == "full" and (args.load_in_4bit or args.load_in_8bit):
+    full_tuning = (
+        args.text_tuning == "full"
+        or args.vision_tuning == "full"
+        or args.vision_merger_tuning == "full"
+    )
+    if full_tuning and (args.load_in_4bit or args.load_in_8bit):
         raise ValueError(
-            "Full vision-encoder tuning is incompatible with 4-bit or 8-bit quantized weights. "
-            "Use --vision-tuning lora, or combine --vision-tuning full with --no-load-in-4bit."
+            "Full text, vision-block, or vision-merger tuning is incompatible with "
+            "4-bit or 8-bit quantized weights. Disable quantized loading for full tuning."
+        )
+    if args.vision_train_last_n_blocks is not None:
+        if args.vision_train_last_n_blocks < 1:
+            raise ValueError("--vision-train-last-n-blocks must be positive.")
+        if args.vision_tuning != "full":
+            raise ValueError(
+                "--vision-train-last-n-blocks is only valid with --vision-tuning full."
+            )
+    if args.text_tuning == "full" and (
+        args.vision_tuning == "lora" or args.vision_merger_tuning == "lora"
+    ):
+        raise ValueError(
+            "Full text tuning cannot be mixed with vision LoRA because PEFT checkpoints "
+            "would not contain the fully trained text backbone."
         )
     parse_vision_module_names(args.vision_module_names)
 
@@ -1496,6 +1561,224 @@ def find_vision_modules(model: Any, configured_names: list[str]) -> list[tuple[s
             continue
         roots.append((name, module))
     return roots
+
+
+def find_vision_components(
+    vision_modules: list[tuple[str, Any]],
+) -> tuple[list[tuple[str, Any]], list[tuple[str, Any]]]:
+    """Return individual vision blocks and merger modules from each vision root.
+
+    Qwen3.5 exposes these as ``visual.blocks`` and ``visual.merger``. When PEFT
+    wraps a full vision module in ``modules_to_save``, prefer its checkpointed
+    copy over the inactive original module.
+    """
+    blocks: list[tuple[str, Any]] = []
+    mergers: list[tuple[str, Any]] = []
+    for root_path, root_module in vision_modules:
+        descendants = list(root_module.named_modules())
+        saved_copy_present = any("modules_to_save." in name for name, _ in descendants)
+
+        block_containers = [
+            (name, module)
+            for name, module in descendants
+            if name and name.rsplit(".", 1)[-1] == "blocks"
+            and (not saved_copy_present or "modules_to_save." in name)
+        ]
+        merger_candidates = [
+            (name, module)
+            for name, module in descendants
+            if name and name.rsplit(".", 1)[-1] == "merger"
+            and (not saved_copy_present or "modules_to_save." in name)
+        ]
+        if len(block_containers) != 1 or len(merger_candidates) != 1:
+            raise RuntimeError(
+                f"Vision module {root_path!r} must expose exactly one 'blocks' container "
+                "and one 'merger' module. This component-level tuning interface targets "
+                "the Qwen3.5 visual layout."
+            )
+
+        container_path, container = block_containers[0]
+        try:
+            indexed_blocks = list(enumerate(container))
+        except TypeError as exc:
+            raise RuntimeError(
+                f"Vision blocks container {root_path}.{container_path} is not iterable."
+            ) from exc
+        if not indexed_blocks:
+            raise RuntimeError(f"Vision blocks container {root_path}.{container_path} is empty.")
+        blocks.extend(
+            (f"{root_path}.{container_path}.{index}", block)
+            for index, block in indexed_blocks
+        )
+
+        merger_path, merger = merger_candidates[0]
+        mergers.append((f"{root_path}.{merger_path}", merger))
+    return blocks, mergers
+
+
+def select_vision_blocks(
+    blocks: list[tuple[str, Any]],
+    last_n_blocks: int | None,
+) -> list[tuple[str, Any]]:
+    if last_n_blocks is None:
+        return list(blocks)
+    if last_n_blocks > len(blocks):
+        raise RuntimeError(
+            f"Requested the last {last_n_blocks} vision blocks, but the loaded model "
+            f"contains only {len(blocks)}."
+        )
+    return blocks[-last_n_blocks:]
+
+
+def _set_component_trainability(module: Any, mode: str) -> tuple[int, int]:
+    trainable = 0
+    total = 0
+    seen: set[int] = set()
+    for name, parameter in module.named_parameters():
+        if id(parameter) in seen:
+            continue
+        seen.add(id(parameter))
+        total += parameter.numel()
+        if mode == "full":
+            parameter.requires_grad = True
+        elif mode == "lora":
+            parameter.requires_grad = "lora_" in name
+        elif mode == "frozen":
+            parameter.requires_grad = False
+        else:
+            raise ValueError(f"Unsupported tuning mode: {mode}")
+        if parameter.requires_grad:
+            trainable += parameter.numel()
+    return trainable, total
+
+
+def configure_component_tuning(
+    model: Any,
+    vision_modules: list[tuple[str, Any]],
+    *,
+    text_mode: str,
+    block_mode: str,
+    merger_mode: str,
+    last_n_blocks: int | None,
+) -> dict[str, Any]:
+    """Apply independent text, vision-block, and merger trainability."""
+    if not vision_modules:
+        raise RuntimeError("No vision module was found for component-level tuning.")
+
+    vision_roots = [path for path, _ in vision_modules]
+    for _, vision_module in vision_modules:
+        for parameter in vision_module.parameters():
+            parameter.requires_grad = False
+
+    if text_mode == "full":
+        for name, parameter in model.named_parameters():
+            if not any(
+                name == root or name.startswith(root + ".") for root in vision_roots
+            ):
+                parameter.requires_grad = True
+
+    blocks, mergers = find_vision_components(vision_modules)
+    selected_blocks = (
+        [] if block_mode == "frozen" else select_vision_blocks(blocks, last_n_blocks)
+    )
+    selected_block_ids = {id(module) for _, module in selected_blocks}
+
+    block_trainable = 0
+    block_total = 0
+    selected_indexes: list[int] = []
+    for index, (path, block) in enumerate(blocks):
+        mode = block_mode if id(block) in selected_block_ids else "frozen"
+        trainable, total = _set_component_trainability(block, mode)
+        block_trainable += trainable
+        block_total += total
+        if mode != "frozen":
+            selected_indexes.append(index)
+
+    merger_trainable = 0
+    merger_total = 0
+    for _, merger in mergers:
+        trainable, total = _set_component_trainability(merger, merger_mode)
+        merger_trainable += trainable
+        merger_total += total
+
+    component_parameter_ids = {
+        id(parameter)
+        for _, component in [*blocks, *mergers]
+        for parameter in component.parameters()
+    }
+    complete_full_tuning = (
+        text_mode == "full"
+        and block_mode == "full"
+        and len(selected_blocks) == len(blocks)
+        and merger_mode == "full"
+    )
+    other_trainable = 0
+    other_total = 0
+    seen_other: set[int] = set()
+    for _, vision_module in vision_modules:
+        for parameter in vision_module.parameters():
+            parameter_id = id(parameter)
+            if parameter_id in component_parameter_ids or parameter_id in seen_other:
+                continue
+            seen_other.add(parameter_id)
+            parameter.requires_grad = complete_full_tuning
+            other_total += parameter.numel()
+            if parameter.requires_grad:
+                other_trainable += parameter.numel()
+
+    if block_mode == "lora" and block_trainable == 0:
+        raise RuntimeError(
+            "Vision-block LoRA was requested, but no LoRA parameters were created in "
+            "the selected blocks."
+        )
+    if merger_mode == "lora" and merger_trainable == 0:
+        raise RuntimeError(
+            "Vision-merger LoRA was requested, but no LoRA parameters were created in the merger."
+        )
+
+    text_trainable = 0
+    text_total = 0
+    seen_text: set[int] = set()
+    for name, parameter in model.named_parameters():
+        if any(name == root or name.startswith(root + ".") for root in vision_roots):
+            continue
+        if id(parameter) in seen_text:
+            continue
+        seen_text.add(id(parameter))
+        text_total += parameter.numel()
+        if parameter.requires_grad:
+            text_trainable += parameter.numel()
+
+    return {
+        "text": {
+            "mode": text_mode,
+            "trainable_parameters": text_trainable,
+            "total_parameters": text_total,
+        },
+        "vision": {
+            "module_paths": vision_roots,
+            "blocks": {
+                "mode": block_mode,
+                "total_blocks": len(blocks),
+                "trained_blocks": len(selected_blocks),
+                "selected_block_indexes": selected_indexes,
+                "trainable_parameters": block_trainable,
+                "total_parameters": block_total,
+            },
+            "merger": {
+                "mode": merger_mode,
+                "module_paths": [path for path, _ in mergers],
+                "trainable_parameters": merger_trainable,
+                "total_parameters": merger_total,
+            },
+            "other": {
+                "mode": "full" if complete_full_tuning else "frozen",
+                "description": "vision patch and positional embeddings plus other non-block components",
+                "trainable_parameters": other_trainable,
+                "total_parameters": other_total,
+            },
+        },
+    }
 
 
 def configure_vision_tuning(
@@ -1719,6 +2002,7 @@ def copy_checkpoint_model_artifacts(source_dir: Path, destination_dir: Path) -> 
     weight_prefixes = (
         "adapter_model.",
         "model.safetensors",
+        "model-",
         "pytorch_model",
     )
     selected = [
@@ -1815,7 +2099,10 @@ def main(
         )
         print(f"  load_in_4bit: {args.load_in_4bit}")
         print(f"  load_in_8bit: {args.load_in_8bit}")
-        print(f"  vision_tuning: {args.vision_tuning}")
+        print(f"  text_tuning: {args.text_tuning}")
+        print(f"  vision_blocks_tuning: {args.vision_tuning}")
+        print(f"  vision_merger_tuning: {args.vision_merger_tuning}")
+        print(f"  vision_train_last_n_blocks: {args.vision_train_last_n_blocks}")
         print(f"  target_modules: {parse_target_modules(args.target_modules)}")
         print(f"  validation_preview_samples: {len(validation_preview_examples)}")
         if validation_preview_examples:
@@ -1830,6 +2117,11 @@ def main(
         return 0
 
     load_in_4bit = resolve_load_in_4bit(args)
+    use_peft = (
+        args.text_tuning == "lora"
+        or args.vision_tuning == "lora"
+        or args.vision_merger_tuning == "lora"
+    )
     target_schema = load_json(args.schema_path.resolve()) if validation_preview_examples else None
 
     run_context = RunContext.create(
@@ -1888,7 +2180,10 @@ def main(
             peft_fns,
             transformers_module,
         ) = load_runtime_dependencies(
-            load_in_4bit=load_in_4bit, load_in_8bit=args.load_in_8bit,
+            load_in_4bit=load_in_4bit,
+            load_in_8bit=args.load_in_8bit,
+            use_peft=use_peft,
+            require_bitsandbytes="8bit" in resolve_optimizer(args, load_in_4bit),
         )
         LoraConfig, get_peft_model, prepare_model_for_kbit_training = peft_fns
         vram_tracker = PeakVramTracker(torch, args.output_dir)
@@ -1930,44 +2225,68 @@ def main(
 
         requested_modules_to_save = parse_modules_to_save(args.modules_to_save) or []
         effective_modules_to_save = list(requested_modules_to_save)
-        if args.vision_tuning == "full":
-            for vision_path, _ in vision_modules:
-                vision_attribute = vision_path.rsplit(".", 1)[-1]
-                if vision_attribute not in effective_modules_to_save:
-                    effective_modules_to_save.append(vision_attribute)
+        effective_target_modules: list[str] = []
+        if use_peft:
+            if args.vision_tuning == "full" or args.vision_merger_tuning == "full":
+                # PEFT must checkpoint the full visual copy when a LoRA run also
+                # updates any of its base parameters.
+                for vision_path, _ in vision_modules:
+                    vision_attribute = vision_path.rsplit(".", 1)[-1]
+                    if vision_attribute not in effective_modules_to_save:
+                        effective_modules_to_save.append(vision_attribute)
 
-        effective_target_modules = resolve_lora_target_modules(
-            model=model,
-            raw_value=args.target_modules,
-            vision_module_paths=[path for path, _ in vision_modules],
-            vision_tuning=args.vision_tuning,
-            torch=torch,
-        )
+            vision_blocks, vision_mergers = find_vision_components(vision_modules)
+            vision_lora_paths: list[str] = []
+            if args.vision_tuning == "lora":
+                vision_lora_paths.extend(path for path, _ in vision_blocks)
+            if args.vision_merger_tuning == "lora":
+                vision_lora_paths.extend(path for path, _ in vision_mergers)
 
-        peft_config = LoraConfig(
-            r=args.lora_r,
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
-            bias="none",
-            target_modules=effective_target_modules,
-            task_type="CAUSAL_LM",
-            modules_to_save=effective_modules_to_save or None,
-        )
-        model = get_peft_model(model, peft_config)
-        vision_modules = find_vision_modules(
+            effective_target_modules = resolve_lora_target_modules(
+                model=model,
+                raw_value=args.target_modules,
+                vision_module_paths=[path for path, _ in vision_modules],
+                vision_tuning=args.vision_tuning,
+                torch=torch,
+                text_tuning=args.text_tuning,
+                vision_lora_module_paths=vision_lora_paths,
+            )
+
+            peft_config = LoraConfig(
+                r=args.lora_r,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=args.lora_dropout,
+                bias="none",
+                target_modules=effective_target_modules,
+                task_type="CAUSAL_LM",
+                modules_to_save=effective_modules_to_save or None,
+            )
+            model = get_peft_model(model, peft_config)
+            vision_modules = find_vision_modules(
+                model,
+                parse_vision_module_names(args.vision_module_names),
+            )
+
+        tuning_summary = configure_component_tuning(
             model,
-            parse_vision_module_names(args.vision_module_names),
+            vision_modules,
+            text_mode=args.text_tuning,
+            block_mode=args.vision_tuning,
+            merger_mode=args.vision_merger_tuning,
+            last_n_blocks=args.vision_train_last_n_blocks,
         )
-        vision_summary = configure_vision_tuning(vision_modules, args.vision_tuning)
+        vision_summary = tuning_summary["vision"]
         trainable_parameters, total_parameters = count_trainable_parameters(model)
         if trainable_parameters == 0:
-            raise RuntimeError("The selected LoRA and vision settings left no trainable parameters.")
+            raise RuntimeError("The selected text and vision settings left no trainable parameters.")
         if hasattr(model, "print_trainable_parameters"):
             model.print_trainable_parameters()
         print(
-            f"Vision tuning: {args.vision_tuning}; "
-            f"{vision_summary['trainable_parameters']:,} / "
-            f"{vision_summary['total_parameters']:,} vision parameters trainable."
+            f"Tuning: text={args.text_tuning}, vision_blocks={args.vision_tuning} "
+            f"({vision_summary['blocks']['trained_blocks']}/"
+            f"{vision_summary['blocks']['total_blocks']} blocks), "
+            f"vision_merger={args.vision_merger_tuning}; "
+            f"{trainable_parameters:,} / {total_parameters:,} total parameters trainable."
         )
 
         image_token_ids = {
@@ -2053,6 +2372,7 @@ def main(
                 "target_modules": effective_target_modules,
                 "requested_modules_to_save": requested_modules_to_save or None,
                 "modules_to_save": effective_modules_to_save or None,
+                "tuning": tuning_summary,
                 "vision": vision_summary,
                 "trainable_parameters": trainable_parameters,
                 "total_parameters": total_parameters,

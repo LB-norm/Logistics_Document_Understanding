@@ -15,9 +15,11 @@ from src.Qwen.qwen_finetune_logic import (
     build_model_load_kwargs,
     build_training_arguments,
     build_validation_preview_callback,
+    configure_component_tuning,
     configure_vision_tuning,
     copy_checkpoint_model_artifacts,
     extract_assistant_target,
+    find_vision_components,
     find_vision_modules,
     generate_validation_preview_sample,
     parse_args,
@@ -38,6 +40,25 @@ class _VisionTower(torch.nn.Module):
         self.projection = torch.nn.Linear(4, 4)
         self.lora_A = torch.nn.Linear(4, 2, bias=False)
         self.lora_B = torch.nn.Linear(2, 4, bias=False)
+
+
+class _QwenVisionTower(torch.nn.Module):
+    def __init__(self, block_count: int = 27) -> None:
+        super().__init__()
+        self.patch_embed = torch.nn.Linear(4, 4)
+        self.pos_embed = torch.nn.Embedding(4, 4)
+        self.blocks = torch.nn.ModuleList(
+            [torch.nn.Linear(4, 4) for _ in range(block_count)]
+        )
+        self.merger = torch.nn.Linear(4, 4)
+
+
+class _QwenLayoutModel(torch.nn.Module):
+    def __init__(self, block_count: int = 27) -> None:
+        super().__init__()
+        self.language_model = torch.nn.Linear(4, 4)
+        self.lm_head = torch.nn.Linear(4, 4)
+        self.visual = _QwenVisionTower(block_count)
 
 
 class _MultimodalModel(torch.nn.Module):
@@ -69,7 +90,10 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         self.assertEqual(args.lr_scheduler_type, "cosine")
         self.assertEqual(args.warmup_ratio, 0.05)
         self.assertTrue(args.gradient_checkpointing)
+        self.assertEqual(args.text_tuning, "lora")
         self.assertEqual(args.vision_tuning, "frozen")
+        self.assertEqual(args.vision_merger_tuning, "frozen")
+        self.assertIsNone(args.vision_train_last_n_blocks)
         self.assertEqual(args.target_modules, "all-linear")
         self.assertEqual(args.modules_to_save, "")
         self.assertIsNone(args.max_length)
@@ -225,6 +249,31 @@ class QwenTrainingLauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "model weights"):
                 copy_checkpoint_model_artifacts(source, Path(temp_dir) / "last_model")
 
+    def test_checkpoint_copy_includes_sharded_full_model_weights(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "checkpoint-1"
+            destination = Path(temp_dir) / "last_model"
+            source.mkdir()
+            for name in (
+                "config.json",
+                "model.safetensors.index.json",
+                "model-00001-of-00002.safetensors",
+                "model-00002-of-00002.safetensors",
+            ):
+                (source / name).write_text("weights", encoding="utf-8")
+
+            copied = copy_checkpoint_model_artifacts(source, destination)
+
+            self.assertEqual(
+                copied,
+                [
+                    "config.json",
+                    "model-00001-of-00002.safetensors",
+                    "model-00002-of-00002.safetensors",
+                    "model.safetensors.index.json",
+                ],
+            )
+
     def test_command_line_values_override_launcher_defaults(self) -> None:
         args = parse_args(
             [
@@ -255,6 +304,32 @@ class QwenTrainingLauncherTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "incompatible with 4-bit"):
             validate_training_options(args)
+
+    def test_full_text_and_merger_tuning_reject_quantized_base(self) -> None:
+        for options in (
+            ["--text-tuning", "full", "--load-in-4bit"],
+            ["--vision-merger-tuning", "full", "--load-in-8bit"],
+        ):
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(ValueError, "incompatible"):
+                    validate_training_options(parse_args(options))
+
+    def test_partial_vision_tuning_requires_positive_count_and_full_mode(self) -> None:
+        invalid_options = (
+            [
+                "--vision-train-last-n-blocks",
+                "0",
+                "--vision-tuning",
+                "full",
+                "--no-load-in-4bit",
+            ],
+            ["--vision-train-last-n-blocks", "9"],
+        )
+        for options in invalid_options:
+            with self.subTest(options=options), self.assertRaisesRegex(
+                ValueError, "vision-train-last"
+            ):
+                validate_training_options(parse_args(options))
 
     def test_full_vision_tuning_accepts_non_quantized_base(self) -> None:
         args = parse_args(["--vision-tuning", "full", "--no-load-in-4bit"])
@@ -358,6 +433,27 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         self.assertIn("visual.projection", language_and_vision)
         self.assertIn("visual.lora_A", language_and_vision)
 
+    def test_multimodal_lora_targets_blocks_and_merger_but_not_patch_embed(self) -> None:
+        model = _QwenLayoutModel(block_count=2)
+        vision_modules = find_vision_modules(model, ["visual"])
+        blocks, mergers = find_vision_components(vision_modules)
+
+        targets = resolve_lora_target_modules(
+            model,
+            "all-linear",
+            vision_module_paths=["visual"],
+            vision_tuning="lora",
+            torch=torch,
+            text_tuning="lora",
+            vision_lora_module_paths=[path for path, _ in [*blocks, *mergers]],
+        )
+
+        self.assertIn("language_model", targets)
+        self.assertIn("visual.blocks.0", targets)
+        self.assertIn("visual.blocks.1", targets)
+        self.assertIn("visual.merger", targets)
+        self.assertNotIn("visual.patch_embed", targets)
+
     def test_lora_mode_enables_only_vision_adapter_parameters(self) -> None:
         model = _MultimodalModel()
         modules = find_vision_modules(model, ["visual"])
@@ -397,6 +493,76 @@ class QwenTrainingLauncherTests(unittest.TestCase):
                 for parameter in visual.modules_to_save["default"].parameters()
             )
         )
+
+    def test_component_tuning_selects_last_n_blocks_and_merger_only(self) -> None:
+        model = _QwenLayoutModel()
+        summary = configure_component_tuning(
+            model,
+            find_vision_modules(model, ["visual"]),
+            text_mode="full",
+            block_mode="full",
+            merger_mode="full",
+            last_n_blocks=9,
+        )
+
+        self.assertTrue(
+            all(parameter.requires_grad for parameter in model.language_model.parameters())
+        )
+        self.assertTrue(all(parameter.requires_grad for parameter in model.lm_head.parameters()))
+        self.assertFalse(
+            any(parameter.requires_grad for parameter in model.visual.patch_embed.parameters())
+        )
+        self.assertFalse(
+            any(parameter.requires_grad for parameter in model.visual.pos_embed.parameters())
+        )
+        self.assertFalse(
+            any(
+                parameter.requires_grad
+                for block in model.visual.blocks[:18]
+                for parameter in block.parameters()
+            )
+        )
+        self.assertTrue(
+            all(
+                parameter.requires_grad
+                for block in model.visual.blocks[18:]
+                for parameter in block.parameters()
+            )
+        )
+        self.assertTrue(
+            all(parameter.requires_grad for parameter in model.visual.merger.parameters())
+        )
+        self.assertEqual(summary["vision"]["blocks"]["total_blocks"], 27)
+        self.assertEqual(summary["vision"]["blocks"]["trained_blocks"], 9)
+        self.assertEqual(
+            summary["vision"]["blocks"]["selected_block_indexes"], list(range(18, 27))
+        )
+
+    def test_complete_full_tuning_includes_other_visual_parameters(self) -> None:
+        model = _QwenLayoutModel()
+        summary = configure_component_tuning(
+            model,
+            find_vision_modules(model, ["visual"]),
+            text_mode="full",
+            block_mode="full",
+            merger_mode="full",
+            last_n_blocks=27,
+        )
+
+        self.assertTrue(all(parameter.requires_grad for parameter in model.parameters()))
+        self.assertEqual(summary["vision"]["other"]["mode"], "full")
+
+    def test_component_tuning_rejects_more_blocks_than_model_contains(self) -> None:
+        model = _QwenLayoutModel(block_count=8)
+        with self.assertRaisesRegex(RuntimeError, "contains only 8"):
+            configure_component_tuning(
+                model,
+                find_vision_modules(model, ["visual"]),
+                text_mode="full",
+                block_mode="full",
+                merger_mode="frozen",
+                last_n_blocks=9,
+            )
 
     def test_model_loader_can_be_auto_or_explicit(self) -> None:
         auto_loader = object()

@@ -11,11 +11,11 @@ For the Qwen3.5 9B image-resolution comparison, see the separate
 [resolution-study queue](resolution_tests/README.md). It trains the `low`,
 `high`, and `native` variants and reuses the existing `medium` run as baseline.
 
-The current queue runs the model-size screening campaign for the official Qwen3.5
-4B, 9B, and 27B checkpoints sequentially with the same frozen-vision NF4 QLoRA
-rank-16 recipe. Training sequence truncation is disabled. The non-quantized BF16
-LoRA configurations and the 35B-A3B configuration remain available for reference
-but are excluded from `queue.json`.
+The current queue runs the seven new Qwen3.5 9B tuning-method experiments L1
+through F4. See the dedicated [tuning-method comparison](tuning_methods/README.md)
+for the matrix and launch notes. Q1 is omitted because
+`qwen35_9b_qlora_r16.json` is already that baseline. The older model-size,
+resolution, memory-test, and reference configurations remain available.
 
 ## Run one experiment
 
@@ -83,14 +83,13 @@ exclude CUDA context overhead, allocations outside PyTorch, and other processes,
 so they do not represent the total board usage reported by `nvidia-smi` or an
 exact minimum GPU capacity. Without CUDA, the summary reports `available: false`.
 
-## Current model-size screening
+## Current tuning-method comparison
 
-The three queued configurations differ only in their `model_id`, experiment name,
-and description. Their controlled training recipe is:
+The seven entries vary text, vision-block, and merger trainability. Their common
+controlled training recipe is:
 
-- 4-bit NF4 QLoRA with BF16 compute
-- frozen vision encoder and language-side `all-linear` LoRA targets
-- LoRA rank 16, alpha 32, and dropout 0.05
+- BF16 compute with NF4 QLoRA, BF16 LoRA, or unquantized full tuning
+- LoRA rank 16, alpha 32, and dropout 0.05 where adapters are used
 - physical batch size 1 with 8 gradient accumulation steps
 - ten epochs with a maximum learning rate of `5e-5`
 - cosine learning-rate decay with 5% of optimizer steps used for warmup
@@ -108,7 +107,7 @@ python src/Qwen/run_qwen_experiment_queue.py \
   experiments/qwen/queue.json \
   -- \
   --dataset-root /absolute/path/to/dataset \
-  --runs-dir /absolute/path/to/qwen-screening-runs \
+  --runs-dir /absolute/path/to/qwen35-9b-tuning-runs \
   --cache-dir /absolute/path/to/model-cache \
   --dry-run \
   --max-train-samples 2 \
@@ -118,23 +117,23 @@ python src/Qwen/run_qwen_experiment_queue.py \
 Then start the real queue inside `tmux`, omitting all three dry-run arguments:
 
 ```bash
-tmux new -s qwen-screening
+tmux new -s qwen-tuning
 
 cd /absolute/path/to/Masterstudienarbeit
 source .venv/bin/activate
-mkdir -p /absolute/path/to/qwen-screening-runs
+mkdir -p /absolute/path/to/qwen35-9b-tuning-runs
 
 python src/Qwen/run_qwen_experiment_queue.py \
   experiments/qwen/queue.json \
   -- \
   --dataset-root /absolute/path/to/dataset \
-  --runs-dir /absolute/path/to/qwen-screening-runs \
+  --runs-dir /absolute/path/to/qwen35-9b-tuning-runs \
   --cache-dir /absolute/path/to/model-cache \
-  2>&1 | tee /absolute/path/to/qwen-screening-runs/queue.log
+  2>&1 | tee /absolute/path/to/qwen35-9b-tuning-runs/queue.log
 ```
 
 Detach with `Ctrl-b`, then `d`, and reconnect later with
-`tmux attach -t qwen-screening`. The queue stops on the first failed experiment.
+`tmux attach -t qwen-tuning`. The queue stops on the first failed experiment.
 After resolving a failure, `--start-at EXPERIMENT_NAME` can skip the completed
 entries.
 
@@ -147,7 +146,9 @@ entries.
   "description": "What this experiment changes and why.",
   "training": {
     "model_id": "Qwen/Qwen3.5-9B",
+    "text_tuning": "lora",
     "vision_tuning": "frozen",
+    "vision_merger_tuning": "frozen",
     "num_train_epochs": 10.0,
     "learning_rate": 0.00005,
     "weight_decay": 0.01,
@@ -168,8 +169,9 @@ are rejected before the model is loaded.
 
 The project defaults evaluate and save once per epoch, select the lowest validation
 loss, and retain both the best and final checkpoint. Completed runs additionally expose
-model-only `best_model/` and `last_model/` adapter directories. Experiment configs cannot
-set `save_total_limit` below 2 or use mismatched evaluation and save strategies.
+model-only `best_model/` and `last_model/` directories (adapters or full models).
+Experiment configs cannot set `save_total_limit` below 2 or use mismatched evaluation
+and save strategies.
 
 ## Queue format
 

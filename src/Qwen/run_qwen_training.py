@@ -56,9 +56,14 @@ DEFAULT_TRAINING_CONFIG: dict[str, Any] = {
     "lora_dropout": 0.05,
     "target_modules": "all-linear",
     "modules_to_save": "",
-    # Change to "lora" to train adapters in the vision tower too. "full" is
-    # intended for larger hardware and must be combined with 4-bit disabled.
+    # Tune the language side with adapters by default. Full tuning requires an
+    # unquantized base model.
+    "text_tuning": "lora",
+    # Vision blocks and the modality merger are controlled independently. The
+    # remaining visual inputs stay frozen except in complete full tuning.
     "vision_tuning": "frozen",
+    "vision_merger_tuning": "frozen",
+    "vision_train_last_n_blocks": None,
     "vision_module_names": "visual,vision_tower,vision_model",
     "optim": "auto",
     "attn_implementation": "sdpa",

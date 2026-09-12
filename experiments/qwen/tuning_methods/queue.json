@@ -1,0 +1,14 @@
+{
+  "format_version": 1,
+  "name": "qwen35-9b-tuning-method-comparison",
+  "description": "Seven-run Qwen3.5 9B comparison of BF16 LoRA, NF4 QLoRA, and full BF16 fine-tuning. Q1 is intentionally omitted because the existing frozen-vision 9B NF4 configuration is its baseline.",
+  "experiments": [
+    {"config": "l1_lora_text.json", "enabled": true},
+    {"config": "q2_qlora_multimodal.json", "enabled": true},
+    {"config": "l2_lora_multimodal.json", "enabled": true},
+    {"config": "f1_full_text.json", "enabled": true},
+    {"config": "f2_full_text_merger.json", "enabled": true},
+    {"config": "f3_full_last9.json", "enabled": true},
+    {"config": "f4_full_all.json", "enabled": true}
+  ]
+}

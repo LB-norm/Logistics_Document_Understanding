@@ -111,21 +111,24 @@ Each project example contains the document image, a system instruction, an extra
 prompt, and the annotation's `content` object as the assistant answer. Loss is calculated
 only on the assistant tokens. The prompt, padding, and image tokens are masked.
 
-With the default `--vision-tuning frozen` mode, the Qwen base weights and vision encoder
-remain unchanged. LoRA matrices are trained in the language-model linear layers. The saved
-adapter therefore needs the original base model at inference time.
+With the default `--text-tuning lora --vision-tuning frozen
+--vision-merger-tuning frozen` modes, the Qwen base weights and all visual
+components remain unchanged. LoRA matrices are trained in language-model linear
+layers. The saved adapter therefore needs the original base model at inference.
 
 The JSON Schema is used for validation reports; it is not used to constrain decoding. The
 model learns the key names, nesting, null handling, and field placement from the training
 answers.
 
-## Vision modes
+## Tuning modes
 
 | Command | Trained parameters | Typical use |
 | --- | --- | --- |
-| `--vision-tuning frozen` | Language LoRA only | Lowest-memory tuning mode |
-| `--vision-tuning lora` | Language and vision LoRA | Adapt visual features with a moderate memory increase |
-| `--vision-tuning full --no-load-in-4bit` | Language LoRA and the full vision encoder | Larger GPU; the full vision module is saved with the adapter |
+| `--text-tuning lora` | Language adapters | Default QLoRA/LoRA mode |
+| `--text-tuning full --no-load-in-4bit` | Full language backbone and LM head | Full language adaptation |
+| `--vision-tuning frozen\|lora\|full` | Vision blocks | Independent block control |
+| `--vision-merger-tuning frozen\|lora\|full` | Vision-to-language merger | Independent interface control |
+| `--vision-tuning full --vision-train-last-n-blocks 9` | Last nine vision blocks | Partial vision adaptation |
 
 The code looks for `visual`, `vision_tower`, or `vision_model`. Use
 `--vision-module-names` for another model layout.
@@ -135,6 +138,7 @@ Example with vision-side LoRA:
 ```powershell
 .\.venv\Scripts\python.exe src\Qwen\run_qwen_training.py `
   --vision-tuning lora `
+  --vision-merger-tuning lora `
   --run-name qwen35-2b-vision-lora
 ```
 
