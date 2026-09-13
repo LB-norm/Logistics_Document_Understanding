@@ -1,0 +1,11 @@
+{
+  "format_version": 1,
+  "name": "qwen35-9b-full-tuning-lr5e6-repeat",
+  "description": "Four-run repeat of F1 through F4 at a 5e-6 maximum learning rate; all other controlled settings match the original 1e-6 runs.",
+  "experiments": [
+    {"config": "f1_full_text_lr5e6.json", "enabled": true},
+    {"config": "f2_full_text_merger_lr5e6.json", "enabled": true},
+    {"config": "f3_full_last9_lr5e6.json", "enabled": true},
+    {"config": "f4_full_all_lr5e6.json", "enabled": true}
+  ]
+}

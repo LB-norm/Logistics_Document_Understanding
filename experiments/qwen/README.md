@@ -16,6 +16,8 @@ through F4. See the dedicated [tuning-method comparison](tuning_methods/README.m
 for the matrix and launch notes. Q1 is omitted because
 `qwen35_9b_qlora_r16.json` is already that baseline. The older model-size,
 resolution, memory-test, and reference configurations remain available.
+The tuning-method directory also contains a separate four-run queue that repeats
+F1 through F4 at a `5e-6` maximum learning rate.
 
 ## Run one experiment
 

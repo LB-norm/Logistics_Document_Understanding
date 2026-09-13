@@ -25,6 +25,24 @@ runs, effective batch size 8, ten epochs, cosine decay, 5% warmup, and seed 42.
 The adapter runs use a `5e-5` maximum learning rate; the full-tuning runs use
 `1e-6`.
 
+## Full-tuning learning-rate repeat
+
+`queue_full_lr5e6.json` repeats F1 through F4 with a `5e-6` maximum learning
+rate. All other controlled settings remain unchanged. The repeat configs and
+run names use an `-lr5e6` suffix so the completed `1e-6` experiment definitions
+and output directories remain intact.
+
+Inspect the repeat queue with:
+
+```bash
+python src/Qwen/run_qwen_experiment_queue.py \
+  experiments/qwen/tuning_methods/queue_full_lr5e6.json \
+  --list
+```
+
+Launch it by replacing the queue path in the commands below with
+`experiments/qwen/tuning_methods/queue_full_lr5e6.json`.
+
 ## Validate and launch
 
 From the repository root, inspect the resolved queue without loading a model:

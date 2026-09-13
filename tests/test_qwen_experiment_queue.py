@@ -119,6 +119,28 @@ class QwenExperimentQueueTests(unittest.TestCase):
         self.assertNotIn(baseline, [entry.config_path for entry in queue.entries])
         self.assertEqual(len(queue.entries), 7)
 
+    def test_full_tuning_repeat_queue_uses_five_e_minus_six(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        queue = load_experiment_queue(
+            repo_root / "experiments/qwen/tuning_methods/queue_full_lr5e6.json"
+        )
+
+        self.assertEqual(len(queue.entries), 4)
+        for entry in queue.entries:
+            self.assertTrue(entry.enabled)
+            args = parse_training_args(
+                ["--config", str(entry.config_path)],
+                defaults=DEFAULT_TRAINING_CONFIG,
+            )
+            validate_training_options(args)
+            self.assertTrue(args.run_name.endswith("-lr5e6"))
+            self.assertEqual(args.learning_rate, 5e-6)
+            self.assertEqual(args.num_train_epochs, 10.0)
+            self.assertEqual(args.text_tuning, "full")
+            self.assertEqual(args.optim, "paged_adamw_8bit")
+            self.assertTrue(args.save_only_model)
+            self.assertEqual(args.save_total_limit, 1)
+
     def test_memory_queue_varies_only_weight_quantization_and_resolution(self) -> None:
         queue_path = Path(__file__).resolve().parents[1] / "experiments/qwen/memory_tests/queue.json"
         queue = load_experiment_queue(queue_path)
