@@ -79,6 +79,9 @@ DEFAULT_TRAINING_CONFIG: dict[str, Any] = {
     "validation_preview_samples": 2,
     "validation_preview_max_new_tokens": 2048,
     "save_total_limit": 2,
+    # Experiments can override this to avoid optimizer-state snapshots when
+    # training is intended to complete in one uninterrupted run.
+    "save_only_model": False,
     "dataloader_num_workers": 0,
     "seed": 42,
 }

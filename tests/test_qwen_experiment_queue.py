@@ -76,13 +76,13 @@ class QwenExperimentQueueTests(unittest.TestCase):
         queue_path = Path(__file__).resolve().parents[1] / "experiments/qwen/queue.json"
         queue = load_experiment_queue(queue_path)
         expected = [
-            ("qwen35-9b-l1-lora-text", False, "lora", "frozen", "frozen", None),
-            ("qwen35-9b-q2-qlora-multimodal", True, "lora", "lora", "lora", None),
-            ("qwen35-9b-l2-lora-multimodal", False, "lora", "lora", "lora", None),
-            ("qwen35-9b-f1-full-text", False, "full", "frozen", "frozen", None),
-            ("qwen35-9b-f2-full-text-merger", False, "full", "frozen", "full", None),
-            ("qwen35-9b-f3-full-last9", False, "full", "full", "full", 9),
-            ("qwen35-9b-f4-full-all", False, "full", "full", "full", 27),
+            ("qwen35-9b-l1-lora-text", False, "lora", "frozen", "frozen", None, 5e-5, True),
+            ("qwen35-9b-q2-qlora-multimodal", True, "lora", "lora", "lora", None, 5e-5, True),
+            ("qwen35-9b-l2-lora-multimodal", False, "lora", "lora", "lora", None, 5e-5, True),
+            ("qwen35-9b-f1-full-text", False, "full", "frozen", "frozen", None, 1e-6, True),
+            ("qwen35-9b-f2-full-text-merger", False, "full", "frozen", "full", None, 1e-6, True),
+            ("qwen35-9b-f3-full-last9", False, "full", "full", "full", 9, 1e-6, True),
+            ("qwen35-9b-f4-full-all", False, "full", "full", "full", 27, 1e-6, True),
         ]
 
         self.assertEqual(len(queue.entries), len(expected))
@@ -93,7 +93,7 @@ class QwenExperimentQueueTests(unittest.TestCase):
                 defaults=DEFAULT_TRAINING_CONFIG,
             )
             validate_training_options(args)
-            name, quantized, text, blocks, merger, last_n = expected_values
+            name, quantized, text, blocks, merger, last_n, learning_rate, model_only = expected_values
             self.assertEqual(args.run_name, name)
             self.assertEqual(args.model_id, "Qwen/Qwen3.5-9B")
             self.assertEqual(args.load_in_4bit, quantized)
@@ -103,7 +103,9 @@ class QwenExperimentQueueTests(unittest.TestCase):
             self.assertEqual(args.vision_train_last_n_blocks, last_n)
             self.assertEqual(args.resolution, "medium")
             self.assertEqual(args.num_train_epochs, 10.0)
-            self.assertEqual(args.learning_rate, 5e-5)
+            self.assertEqual(args.learning_rate, learning_rate)
+            self.assertEqual(args.optim, "paged_adamw_8bit")
+            self.assertEqual(args.save_only_model, model_only)
             self.assertEqual(args.weight_decay, 0.01)
             self.assertEqual(args.lr_scheduler_type, "cosine")
             self.assertEqual(args.warmup_ratio, 0.05)

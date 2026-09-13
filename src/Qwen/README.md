@@ -202,11 +202,13 @@ Preview generation affects runtime but does not create gradients. Adjust it with
 
 ## Best and last models
 
-Teacher-forced validation and resumable checkpointing run once per epoch by default.
-Trainer selects the checkpoint with the lowest `eval_loss`, reloads it after training,
-and retains it alongside the final checkpoint. `save_total_limit` must be at least 2.
+Teacher-forced validation and checkpointing run once per epoch by default.
+Trainer selects the snapshot with the lowest `eval_loss`, reloads it after
+training, and retains it alongside the final snapshot. `save_total_limit` must
+be at least 2.
 
-A successful run exposes both choices through stable model-only directories:
+A normal adapter run exposes both choices through stable model-only directories
+and also retains resumable Trainer checkpoints:
 
 ```text
 runs/qwen/<run-name>/
@@ -218,14 +220,27 @@ runs/qwen/<run-name>/
 
 The adapter at the run root is also the best model for backwards compatibility.
 `best_model/` and `last_model/` contain processor files and can each be passed directly
-to `run_inference.py --adapter-path`. If the final checkpoint is also the best, the two
-directories intentionally contain the same learned weights.
+to inference.
+
+For large full-tuning runs, use `--save-only-model`. Epoch snapshots then omit
+optimizer, scheduler, scaler, and RNG state and cannot be used to resume
+training. At completion, the retained snapshots are renamed in place:
+
+```text
+runs/qwen/<run-name>/
+|-- best_model/     # lowest validation loss
+`-- last_model/     # final step, omitted when it is also best
+```
+
+No duplicate full model is written at the run root in this mode, and other
+epoch snapshots are removed.
 
 ## Run output and resume
 
-Without `--output-dir`, runs are created under `runs/qwen/`. A completed run contains the
-best and last adapters, processor files, retained checkpoints, `training_config.json`,
-`trainer_state.json`, and `run_metadata.json`.
+Without `--output-dir`, runs are created under `runs/qwen/`. Every completed run
+contains the retained model directories, processor files,
+`training_config.json`, `trainer_state.json`, and `run_metadata.json`. Adapter
+runs also retain their resumable checkpoints.
 
 Resume an interrupted run with the same output directory:
 

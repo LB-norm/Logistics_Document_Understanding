@@ -402,6 +402,24 @@ def parse_args(
         default=None,
         help="Optional checkpoint path to resume training from.",
     )
+    checkpoint_content_group = parser.add_mutually_exclusive_group()
+    checkpoint_content_group.add_argument(
+        "--save-only-model",
+        dest="save_only_model",
+        action="store_true",
+        help=(
+            "Store model weights and Trainer metadata without optimizer, scheduler, "
+            "scaler, or RNG state. This substantially reduces full-tuning storage but "
+            "the resulting snapshots cannot resume training."
+        ),
+    )
+    checkpoint_content_group.add_argument(
+        "--save-resume-state",
+        dest="save_only_model",
+        action="store_false",
+        help="Store resumable optimizer, scheduler, scaler, and RNG state with checkpoints.",
+    )
+    parser.set_defaults(save_only_model=False)
     parser.add_argument(
         "--max-train-samples",
         type=int,
@@ -1958,6 +1976,7 @@ def build_training_arguments(
         save_steps=args.save_steps,
         logging_steps=args.logging_steps,
         save_total_limit=args.save_total_limit,
+        save_only_model=args.save_only_model,
         dataloader_num_workers=args.dataloader_num_workers,
         remove_unused_columns=False,
         max_steps=args.max_steps,
@@ -2060,6 +2079,72 @@ def save_best_and_last_model_artifacts(
         "last_checkpoint": str(last_checkpoint),
         "best_model_dir": str(best_model_dir.resolve()),
         "last_model_dir": str(last_model_dir.resolve()),
+        "best_and_last_are_same": best_checkpoint == last_checkpoint,
+        "resumable": True,
+    }
+
+
+def retain_model_only_best_and_last(
+    *,
+    trainer: Any,
+    processor: Any,
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Rename model-only Trainer snapshots instead of copying full weights.
+
+    ``Trainer`` has already reloaded the best snapshot when this function runs.
+    The highest-step snapshot therefore still contains the final training
+    weights. Renaming the retained snapshots produces stable model directories
+    without another serialization pass or any duplicate model weights.
+    """
+    best_checkpoint_value = trainer.state.best_model_checkpoint
+    if not best_checkpoint_value:
+        raise RuntimeError(
+            "Trainer did not identify a best checkpoint. Check evaluation and save settings."
+        )
+    best_checkpoint = Path(best_checkpoint_value).resolve()
+    if not best_checkpoint.is_dir():
+        raise RuntimeError(f"Best checkpoint was not retained: {best_checkpoint}")
+    last_checkpoint = find_last_checkpoint(output_dir).resolve()
+
+    best_model_dir = output_dir / "best_model"
+    last_model_dir = output_dir / "last_model"
+    for destination in (best_model_dir, last_model_dir):
+        if destination.exists():
+            raise RuntimeError(
+                f"Cannot finalize model-only snapshots because {destination} already exists. "
+                "Use a new output directory for a new training run."
+            )
+
+    same_model = best_checkpoint == last_checkpoint
+    if same_model:
+        best_checkpoint.rename(best_model_dir)
+        processor.save_pretrained(str(best_model_dir))
+        retained_last_dir = best_model_dir
+    else:
+        best_checkpoint.rename(best_model_dir)
+        last_checkpoint.rename(last_model_dir)
+        processor.save_pretrained(str(best_model_dir))
+        processor.save_pretrained(str(last_model_dir))
+        retained_last_dir = last_model_dir
+
+    # save_total_limit normally leaves only the best and latest snapshots, but
+    # remove any older model-only snapshots so the completed run contains only
+    # the artifacts promised by this storage policy.
+    for path in output_dir.iterdir():
+        if path.is_dir() and re.fullmatch(r"checkpoint-\d+", path.name):
+            shutil.rmtree(path)
+
+    return {
+        "selection_metric": "eval_loss",
+        "greater_is_better": False,
+        "best_metric": trainer.state.best_metric,
+        "best_checkpoint": None,
+        "last_checkpoint": None,
+        "best_model_dir": str(best_model_dir.resolve()),
+        "last_model_dir": str(retained_last_dir.resolve()),
+        "best_and_last_are_same": same_model,
+        "resumable": False,
     }
 
 
@@ -2103,6 +2188,7 @@ def main(
         print(f"  vision_blocks_tuning: {args.vision_tuning}")
         print(f"  vision_merger_tuning: {args.vision_merger_tuning}")
         print(f"  vision_train_last_n_blocks: {args.vision_train_last_n_blocks}")
+        print(f"  save_only_model: {args.save_only_model}")
         print(f"  target_modules: {parse_target_modules(args.target_modules)}")
         print(f"  validation_preview_samples: {len(validation_preview_examples)}")
         if validation_preview_examples:
@@ -2161,6 +2247,8 @@ def main(
                 "eval_strategy": args.eval_strategy,
                 "save_strategy": args.save_strategy,
                 "save_total_limit": args.save_total_limit,
+                "save_only_model": args.save_only_model,
+                "resumable": not args.save_only_model,
                 "load_best_model_at_end": True,
             },
         },
@@ -2344,17 +2432,24 @@ def main(
         train_result = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
         eval_metrics = trainer.evaluate()
 
-        # With load_best_model_at_end enabled, the in-memory model is now the
-        # best eval-loss checkpoint. Keep it at the run root for backwards
-        # compatibility and also materialize explicit best/last directories.
-        trainer.save_model(str(args.output_dir))
         trainer.save_state()
         processor.save_pretrained(str(args.output_dir))
-        checkpoint_artifacts = save_best_and_last_model_artifacts(
-            trainer=trainer,
-            processor=processor,
-            output_dir=args.output_dir,
-        )
+        if args.save_only_model:
+            checkpoint_artifacts = retain_model_only_best_and_last(
+                trainer=trainer,
+                processor=processor,
+                output_dir=args.output_dir,
+            )
+        else:
+            # Adapter runs keep the backwards-compatible root export and
+            # separate best/last model directories in addition to their small,
+            # resumable Trainer checkpoints.
+            trainer.save_model(str(args.output_dir))
+            checkpoint_artifacts = save_best_and_last_model_artifacts(
+                trainer=trainer,
+                processor=processor,
+                output_dir=args.output_dir,
+            )
 
         resolved_config = namespace_to_dict(args)
         resolved_config.update(
@@ -2387,6 +2482,7 @@ def main(
                     "eval_strategy": args.eval_strategy,
                     "save_strategy": args.save_strategy,
                     "save_total_limit": args.save_total_limit,
+                    "save_only_model": args.save_only_model,
                     **checkpoint_artifacts,
                 },
             }
@@ -2426,12 +2522,15 @@ def main(
             metrics=normalized_metrics,
         )
 
-        print(f"Saved best Qwen LoRA adapter to {args.output_dir}")
-        print(f"Best model copy: {checkpoint_artifacts['best_model_dir']}")
-        print(f"Last model copy: {checkpoint_artifacts['last_model_dir']}")
+        print(f"Best model: {checkpoint_artifacts['best_model_dir']}")
+        if checkpoint_artifacts["best_and_last_are_same"]:
+            print("Last model is also the best model; no duplicate was retained.")
+        else:
+            print(f"Last model: {checkpoint_artifacts['last_model_dir']}")
         print(
             "Recommended next step: run inference with "
-            f"`python src/Qwen/run_inference.py --adapter-path {args.output_dir}`"
+            "`python src/Qwen/run_inference.py --adapter-path "
+            f"{checkpoint_artifacts['best_model_dir']}`"
         )
         return 0
     except Exception as exc:

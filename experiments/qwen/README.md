@@ -91,12 +91,14 @@ controlled training recipe is:
 - BF16 compute with NF4 QLoRA, BF16 LoRA, or unquantized full tuning
 - LoRA rank 16, alpha 32, and dropout 0.05 where adapters are used
 - physical batch size 1 with 8 gradient accumulation steps
-- ten epochs with a maximum learning rate of `5e-5`
+- ten epochs with a maximum learning rate of `5e-5` for adapter runs and `1e-6`
+  for full-tuning runs
 - cosine learning-rate decay with 5% of optimizer steps used for warmup
 - AdamW weight decay of `0.01`
 - `medium` resolution (2.8 MP maximum), untruncated training sequences, and seed 42
 - 2048-token generation budget for validation previews
 - evaluation and checkpointing after every epoch, retaining the best and last model
+- model-only snapshots for this queue, without optimizer resume state
 
 ## Remote launch checklist
 
@@ -157,6 +159,7 @@ entries.
     "eval_strategy": "epoch",
     "save_strategy": "epoch",
     "save_total_limit": 2,
+    "save_only_model": true,
     "seed": 42
   }
 }
@@ -167,11 +170,13 @@ Every key in `training` must match a command-line option from
 `run_qwen_training.py`, written with underscores instead of hyphens. Unknown keys
 are rejected before the model is loaded.
 
-The project defaults evaluate and save once per epoch, select the lowest validation
-loss, and retain both the best and final checkpoint. Completed runs additionally expose
-model-only `best_model/` and `last_model/` directories (adapters or full models).
-Experiment configs cannot set `save_total_limit` below 2 or use mismatched evaluation
-and save strategies.
+The project defaults evaluate and save once per epoch, select the lowest
+validation loss, and retain the best and final snapshot. The tuning-method
+configs set `save_only_model` to avoid optimizer-state files and finalize the
+snapshots in place as `best_model/` and, only when distinct, `last_model/`.
+Other experiment configs retain resumable checkpoints and the
+backwards-compatible root export. Experiment configs cannot set
+`save_total_limit` below 2 or use mismatched evaluation and save strategies.
 
 ## Queue format
 

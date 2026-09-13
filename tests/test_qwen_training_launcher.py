@@ -23,6 +23,7 @@ from src.Qwen.qwen_finetune_logic import (
     find_vision_modules,
     generate_validation_preview_sample,
     parse_args,
+    retain_model_only_best_and_last,
     resolve_lora_target_modules,
     resolve_optimizer,
     save_best_and_last_model_artifacts,
@@ -102,6 +103,7 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         self.assertEqual(args.eval_strategy, "epoch")
         self.assertEqual(args.save_strategy, "epoch")
         self.assertEqual(args.save_total_limit, 2)
+        self.assertFalse(args.save_only_model)
         self.assertEqual(args.resolution, "medium")
         self.assertEqual(args.user_prompt, DEFAULT_USER_PROMPT)
         self.assertEqual(build_processor_load_kwargs(args)["max_pixels"], 2_800_000)
@@ -140,6 +142,7 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         self.assertEqual(training_args.values["eval_strategy"], "epoch")
         self.assertEqual(training_args.values["save_strategy"], "epoch")
         self.assertEqual(training_args.values["save_total_limit"], 2)
+        self.assertFalse(training_args.values["save_only_model"])
         self.assertEqual(training_args.values["lr_scheduler_type"], "cosine")
         self.assertEqual(training_args.values["warmup_steps"], 0.05)
         self.assertNotIn("warmup_ratio", training_args.values)
@@ -273,6 +276,76 @@ class QwenTrainingLauncherTests(unittest.TestCase):
                     "model.safetensors.index.json",
                 ],
             )
+
+    def test_model_only_finalization_renames_best_and_distinct_last_without_copies(self) -> None:
+        class FakeProcessor:
+            @staticmethod
+            def save_pretrained(destination: str) -> None:
+                (Path(destination) / "processor.json").write_text("{}", encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            best_checkpoint = output_dir / "checkpoint-25"
+            intermediate_checkpoint = output_dir / "checkpoint-50"
+            last_checkpoint = output_dir / "checkpoint-75"
+            for checkpoint, contents in (
+                (best_checkpoint, "best"),
+                (intermediate_checkpoint, "intermediate"),
+                (last_checkpoint, "last"),
+            ):
+                checkpoint.mkdir()
+                (checkpoint / "model.safetensors").write_text(contents, encoding="utf-8")
+
+            trainer = SimpleNamespace(
+                state=SimpleNamespace(
+                    best_model_checkpoint=str(best_checkpoint),
+                    best_metric=0.125,
+                )
+            )
+            summary = retain_model_only_best_and_last(
+                trainer=trainer,
+                processor=FakeProcessor(),
+                output_dir=output_dir,
+            )
+
+            self.assertEqual(
+                (output_dir / "best_model" / "model.safetensors").read_text(), "best"
+            )
+            self.assertEqual(
+                (output_dir / "last_model" / "model.safetensors").read_text(), "last"
+            )
+            self.assertFalse(any(output_dir.glob("checkpoint-*")))
+            self.assertFalse(summary["best_and_last_are_same"])
+            self.assertFalse(summary["resumable"])
+
+    def test_model_only_finalization_does_not_duplicate_identical_best_and_last(self) -> None:
+        class FakeProcessor:
+            @staticmethod
+            def save_pretrained(destination: str) -> None:
+                (Path(destination) / "processor.json").write_text("{}", encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            checkpoint = output_dir / "checkpoint-25"
+            checkpoint.mkdir()
+            (checkpoint / "model.safetensors").write_text("same", encoding="utf-8")
+            trainer = SimpleNamespace(
+                state=SimpleNamespace(
+                    best_model_checkpoint=str(checkpoint),
+                    best_metric=0.125,
+                )
+            )
+
+            summary = retain_model_only_best_and_last(
+                trainer=trainer,
+                processor=FakeProcessor(),
+                output_dir=output_dir,
+            )
+
+            self.assertTrue((output_dir / "best_model" / "model.safetensors").is_file())
+            self.assertFalse((output_dir / "last_model").exists())
+            self.assertTrue(summary["best_and_last_are_same"])
+            self.assertEqual(summary["best_model_dir"], summary["last_model_dir"])
 
     def test_command_line_values_override_launcher_defaults(self) -> None:
         args = parse_args(

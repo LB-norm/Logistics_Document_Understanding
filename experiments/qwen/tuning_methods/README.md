@@ -6,23 +6,24 @@ NF4 QLoRA baseline.
 
 | Order | ID | Base weights | Text | Vision blocks | Merger | Optimizer |
 | ---: | --- | --- | --- | --- | --- | --- |
-| 1 | L1 | BF16 | LoRA | Frozen | Frozen | AdamW |
+| 1 | L1 | BF16 | LoRA | Frozen | Frozen | Paged 8-bit AdamW |
 | 2 | Q2 | NF4, BF16 compute | LoRA | LoRA, all 27 | LoRA | Paged 8-bit AdamW |
-| 3 | L2 | BF16 | LoRA | LoRA, all 27 | LoRA | AdamW |
+| 3 | L2 | BF16 | LoRA | LoRA, all 27 | LoRA | Paged 8-bit AdamW |
 | 4 | F1 | BF16 | Full | Frozen | Frozen | Paged 8-bit AdamW |
 | 5 | F2 | BF16 | Full | Frozen | Full | Paged 8-bit AdamW |
 | 6 | F3 | BF16 | Full | Full, last 9/27 | Full | Paged 8-bit AdamW |
 | 7 | F4 | BF16 | Full | Full, 27/27 | Full | Paged 8-bit AdamW |
 
-The full-fine-tuning runs use an 8-bit optimizer to reduce optimizer-state
-memory; the model parameters and compute remain BF16. F4 also trains the visual
-patch and positional embeddings, making it a genuinely complete full-model run.
-F1--F3 leave those non-block visual components frozen.
+All runs use the paged 8-bit AdamW optimizer. The model parameters and compute
+remain BF16 in the unquantized runs. F4 also trains the visual patch and
+positional embeddings, making it a genuinely complete full-model run. F1--F3
+leave those non-block visual components frozen.
 
-Apart from the requested tuning method and the optimizer needed by that method,
-the configs retain the Q1 controlled recipe: Qwen3.5 9B, medium resolution,
-rank 16/alpha 32/dropout 0.05 for adapter runs, effective batch size 8, ten
-epochs, `5e-5` maximum learning rate, cosine decay, 5% warmup, and seed 42.
+Apart from the requested tuning method, the configs retain the Q1 controlled
+recipe: Qwen3.5 9B, medium resolution, rank 16/alpha 32/dropout 0.05 for adapter
+runs, effective batch size 8, ten epochs, cosine decay, 5% warmup, and seed 42.
+The adapter runs use a `5e-5` maximum learning rate; the full-tuning runs use
+`1e-6`.
 
 ## Validate and launch
 
@@ -71,6 +72,9 @@ at least 9 blocks, while F4 explicitly requests 27; the recorded
 `training_config.json` lists selected zero-based block indexes and trainable
 parameter counts for text, blocks, merger, and remaining visual components.
 
-Full-model checkpoints are much larger than adapter checkpoints. With best and
-last resumable checkpoints plus the two exported model directories, reserve
-substantial disk space before starting F1--F4.
+All seven runs use model-only epoch snapshots: optimizer, scheduler, scaler,
+and RNG states are not written. After training, the best snapshot is renamed to
+`best_model/`; a distinct final snapshot is renamed to `last_model/`. If the
+final snapshot is also best, it is stored only once as `best_model/`. Other
+epoch snapshots are removed, and no full-model copy is written at the run root.
+These runs therefore cannot resume from their retained artifacts.
