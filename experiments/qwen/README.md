@@ -97,7 +97,7 @@ controlled training recipe is:
 - AdamW weight decay of `0.01`
 - `medium` resolution (2.8 MP maximum), untruncated training sequences, and seed 42
 - 2048-token generation budget for validation previews
-- evaluation and checkpointing after every epoch, retaining the best and last model
+- evaluation and checkpointing after every epoch, retaining only the best model
 - model-only snapshots for this queue, without optimizer resume state
 
 ## Remote launch checklist
@@ -158,7 +158,7 @@ entries.
     "warmup_ratio": 0.05,
     "eval_strategy": "epoch",
     "save_strategy": "epoch",
-    "save_total_limit": 2,
+    "save_total_limit": 1,
     "save_only_model": true,
     "seed": 42
   }
@@ -170,13 +170,13 @@ Every key in `training` must match a command-line option from
 `run_qwen_training.py`, written with underscores instead of hyphens. Unknown keys
 are rejected before the model is loaded.
 
-The project defaults evaluate and save once per epoch, select the lowest
-validation loss, and retain the best and final snapshot. The tuning-method
-configs set `save_only_model` to avoid optimizer-state files and finalize the
-snapshots in place as `best_model/` and, only when distinct, `last_model/`.
-Other experiment configs retain resumable checkpoints and the
-backwards-compatible root export. Experiment configs cannot set
-`save_total_limit` below 2 or use mismatched evaluation and save strategies.
+The project defaults evaluate and save once per epoch and select the lowest
+validation loss. The tuning-method configs set `save_only_model` and
+`save_total_limit` to 1 to avoid optimizer-state files and finalize only the
+winning snapshot in place as `best_model/`. Other experiment configs retain
+resumable best/last checkpoints and the backwards-compatible root export.
+Model-only configs require a save limit of at least 1; resumable configs require
+at least 2. Evaluation and save strategies must match.
 
 ## Queue format
 

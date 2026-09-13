@@ -1507,7 +1507,10 @@ def validate_training_options(args: argparse.Namespace) -> None:
                 "--eval-steps and --save-steps must match so the best evaluated model "
                 "is always checkpointed."
             )
-    if args.save_total_limit < 2:
+    minimum_save_limit = 1 if args.save_only_model else 2
+    if args.save_total_limit < minimum_save_limit:
+        if args.save_only_model:
+            raise ValueError("--save-total-limit must be at least 1.")
         raise ValueError(
             "--save-total-limit must be at least 2 so the best and last resumable "
             "checkpoints are both retained."
@@ -2084,18 +2087,18 @@ def save_best_and_last_model_artifacts(
     }
 
 
-def retain_model_only_best_and_last(
+def retain_best_model_only(
     *,
     trainer: Any,
     processor: Any,
     output_dir: Path,
 ) -> dict[str, Any]:
-    """Rename model-only Trainer snapshots instead of copying full weights.
+    """Retain only the best model-only Trainer snapshot without copying it.
 
     ``Trainer`` has already reloaded the best snapshot when this function runs.
-    The highest-step snapshot therefore still contains the final training
-    weights. Renaming the retained snapshots produces stable model directories
-    without another serialization pass or any duplicate model weights.
+    Rename that snapshot to a stable model directory, then remove every other
+    epoch snapshot. This avoids another serialization pass and duplicate model
+    weights.
     """
     best_checkpoint_value = trainer.state.best_model_checkpoint
     if not best_checkpoint_value:
@@ -2105,32 +2108,18 @@ def retain_model_only_best_and_last(
     best_checkpoint = Path(best_checkpoint_value).resolve()
     if not best_checkpoint.is_dir():
         raise RuntimeError(f"Best checkpoint was not retained: {best_checkpoint}")
-    last_checkpoint = find_last_checkpoint(output_dir).resolve()
-
     best_model_dir = output_dir / "best_model"
-    last_model_dir = output_dir / "last_model"
-    for destination in (best_model_dir, last_model_dir):
-        if destination.exists():
-            raise RuntimeError(
-                f"Cannot finalize model-only snapshots because {destination} already exists. "
-                "Use a new output directory for a new training run."
-            )
+    if best_model_dir.exists():
+        raise RuntimeError(
+            f"Cannot finalize the best model because {best_model_dir} already exists. "
+            "Use a new output directory for a new training run."
+        )
 
-    same_model = best_checkpoint == last_checkpoint
-    if same_model:
-        best_checkpoint.rename(best_model_dir)
-        processor.save_pretrained(str(best_model_dir))
-        retained_last_dir = best_model_dir
-    else:
-        best_checkpoint.rename(best_model_dir)
-        last_checkpoint.rename(last_model_dir)
-        processor.save_pretrained(str(best_model_dir))
-        processor.save_pretrained(str(last_model_dir))
-        retained_last_dir = last_model_dir
+    best_checkpoint.rename(best_model_dir)
+    processor.save_pretrained(str(best_model_dir))
 
-    # save_total_limit normally leaves only the best and latest snapshots, but
-    # remove any older model-only snapshots so the completed run contains only
-    # the artifacts promised by this storage policy.
+    # Remove every non-best model-only snapshot so the completed run contains
+    # exactly one set of learned weights.
     for path in output_dir.iterdir():
         if path.is_dir() and re.fullmatch(r"checkpoint-\d+", path.name):
             shutil.rmtree(path)
@@ -2140,10 +2129,7 @@ def retain_model_only_best_and_last(
         "greater_is_better": False,
         "best_metric": trainer.state.best_metric,
         "best_checkpoint": None,
-        "last_checkpoint": None,
         "best_model_dir": str(best_model_dir.resolve()),
-        "last_model_dir": str(retained_last_dir.resolve()),
-        "best_and_last_are_same": same_model,
         "resumable": False,
     }
 
@@ -2241,7 +2227,7 @@ def main(
                 "output_directory": str(args.output_dir / "validation_previews"),
             },
             "checkpoint_policy": {
-                "retained": "best_and_last",
+                "retained": "best" if args.save_only_model else "best_and_last",
                 "selection_metric": "eval_loss",
                 "greater_is_better": False,
                 "eval_strategy": args.eval_strategy,
@@ -2435,7 +2421,7 @@ def main(
         trainer.save_state()
         processor.save_pretrained(str(args.output_dir))
         if args.save_only_model:
-            checkpoint_artifacts = retain_model_only_best_and_last(
+            checkpoint_artifacts = retain_best_model_only(
                 trainer=trainer,
                 processor=processor,
                 output_dir=args.output_dir,
@@ -2478,7 +2464,7 @@ def main(
                     example.get("id") for example in validation_preview_examples
                 ],
                 "checkpoint_policy": {
-                    "retained": "best_and_last",
+                    "retained": "best" if args.save_only_model else "best_and_last",
                     "eval_strategy": args.eval_strategy,
                     "save_strategy": args.save_strategy,
                     "save_total_limit": args.save_total_limit,
@@ -2523,9 +2509,7 @@ def main(
         )
 
         print(f"Best model: {checkpoint_artifacts['best_model_dir']}")
-        if checkpoint_artifacts["best_and_last_are_same"]:
-            print("Last model is also the best model; no duplicate was retained.")
-        else:
+        if not args.save_only_model:
             print(f"Last model: {checkpoint_artifacts['last_model_dir']}")
         print(
             "Recommended next step: run inference with "

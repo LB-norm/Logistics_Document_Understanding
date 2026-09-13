@@ -74,7 +74,6 @@ parameter counts for text, blocks, merger, and remaining visual components.
 
 All seven runs use model-only epoch snapshots: optimizer, scheduler, scaler,
 and RNG states are not written. After training, the best snapshot is renamed to
-`best_model/`; a distinct final snapshot is renamed to `last_model/`. If the
-final snapshot is also best, it is stored only once as `best_model/`. Other
-epoch snapshots are removed, and no full-model copy is written at the run root.
-These runs therefore cannot resume from their retained artifacts.
+`best_model/`. Every other epoch snapshot is removed, including a distinct
+final snapshot, and no full-model copy is written at the run root. These runs
+therefore cannot resume from their retained artifacts.

@@ -203,9 +203,9 @@ Preview generation affects runtime but does not create gradients. Adjust it with
 ## Best and last models
 
 Teacher-forced validation and checkpointing run once per epoch by default.
-Trainer selects the snapshot with the lowest `eval_loss`, reloads it after
-training, and retains it alongside the final snapshot. `save_total_limit` must
-be at least 2.
+Trainer selects the snapshot with the lowest `eval_loss` and reloads it after
+training. The default resumable policy retains it alongside the final snapshot
+and requires `save_total_limit` of at least 2.
 
 A normal adapter run exposes both choices through stable model-only directories
 and also retains resumable Trainer checkpoints:
@@ -222,18 +222,17 @@ The adapter at the run root is also the best model for backwards compatibility.
 `best_model/` and `last_model/` contain processor files and can each be passed directly
 to inference.
 
-For large full-tuning runs, use `--save-only-model`. Epoch snapshots then omit
-optimizer, scheduler, scaler, and RNG state and cannot be used to resume
-training. At completion, the retained snapshots are renamed in place:
+For one-shot runs, use `--save-only-model --save-total-limit 1`. Epoch snapshots
+then omit optimizer, scheduler, scaler, and RNG state and cannot be used to
+resume training. At completion, only the best snapshot is renamed in place:
 
 ```text
 runs/qwen/<run-name>/
-|-- best_model/     # lowest validation loss
-`-- last_model/     # final step, omitted when it is also best
+`-- best_model/     # lowest validation loss
 ```
 
-No duplicate full model is written at the run root in this mode, and other
-epoch snapshots are removed.
+No duplicate model is written at the run root in this mode. The final snapshot
+is removed when it is not the best, along with all other epoch snapshots.
 
 ## Run output and resume
 

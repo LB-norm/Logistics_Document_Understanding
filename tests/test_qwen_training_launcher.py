@@ -23,7 +23,7 @@ from src.Qwen.qwen_finetune_logic import (
     find_vision_modules,
     generate_validation_preview_sample,
     parse_args,
-    retain_model_only_best_and_last,
+    retain_best_model_only,
     resolve_lora_target_modules,
     resolve_optimizer,
     save_best_and_last_model_artifacts,
@@ -156,6 +156,11 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "best and last"):
             validate_training_options(args)
 
+    def test_model_only_checkpoint_policy_accepts_best_only_retention(self) -> None:
+        args = parse_args(["--save-only-model", "--save-total-limit", "1"])
+
+        validate_training_options(args)
+
     def test_warmup_ratio_must_be_a_fraction(self) -> None:
         for value in ("-0.01", "1.0"):
             with self.subTest(value=value):
@@ -277,7 +282,7 @@ class QwenTrainingLauncherTests(unittest.TestCase):
                 ],
             )
 
-    def test_model_only_finalization_renames_best_and_distinct_last_without_copies(self) -> None:
+    def test_model_only_finalization_keeps_only_best_without_copying(self) -> None:
         class FakeProcessor:
             @staticmethod
             def save_pretrained(destination: str) -> None:
@@ -302,7 +307,7 @@ class QwenTrainingLauncherTests(unittest.TestCase):
                     best_metric=0.125,
                 )
             )
-            summary = retain_model_only_best_and_last(
+            summary = retain_best_model_only(
                 trainer=trainer,
                 processor=FakeProcessor(),
                 output_dir=output_dir,
@@ -311,41 +316,9 @@ class QwenTrainingLauncherTests(unittest.TestCase):
             self.assertEqual(
                 (output_dir / "best_model" / "model.safetensors").read_text(), "best"
             )
-            self.assertEqual(
-                (output_dir / "last_model" / "model.safetensors").read_text(), "last"
-            )
-            self.assertFalse(any(output_dir.glob("checkpoint-*")))
-            self.assertFalse(summary["best_and_last_are_same"])
-            self.assertFalse(summary["resumable"])
-
-    def test_model_only_finalization_does_not_duplicate_identical_best_and_last(self) -> None:
-        class FakeProcessor:
-            @staticmethod
-            def save_pretrained(destination: str) -> None:
-                (Path(destination) / "processor.json").write_text("{}", encoding="utf-8")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_dir = Path(temp_dir)
-            checkpoint = output_dir / "checkpoint-25"
-            checkpoint.mkdir()
-            (checkpoint / "model.safetensors").write_text("same", encoding="utf-8")
-            trainer = SimpleNamespace(
-                state=SimpleNamespace(
-                    best_model_checkpoint=str(checkpoint),
-                    best_metric=0.125,
-                )
-            )
-
-            summary = retain_model_only_best_and_last(
-                trainer=trainer,
-                processor=FakeProcessor(),
-                output_dir=output_dir,
-            )
-
-            self.assertTrue((output_dir / "best_model" / "model.safetensors").is_file())
             self.assertFalse((output_dir / "last_model").exists())
-            self.assertTrue(summary["best_and_last_are_same"])
-            self.assertEqual(summary["best_model_dir"], summary["last_model_dir"])
+            self.assertFalse(any(output_dir.glob("checkpoint-*")))
+            self.assertFalse(summary["resumable"])
 
     def test_command_line_values_override_launcher_defaults(self) -> None:
         args = parse_args(

@@ -106,6 +106,7 @@ class QwenExperimentQueueTests(unittest.TestCase):
             self.assertEqual(args.learning_rate, learning_rate)
             self.assertEqual(args.optim, "paged_adamw_8bit")
             self.assertEqual(args.save_only_model, model_only)
+            self.assertEqual(args.save_total_limit, 1)
             self.assertEqual(args.weight_decay, 0.01)
             self.assertEqual(args.lr_scheduler_type, "cosine")
             self.assertEqual(args.warmup_ratio, 0.05)
