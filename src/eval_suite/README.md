@@ -155,3 +155,28 @@ The test-set report contains:
 
 The same behavior is available through `JsonEvaluator.evaluate_testset(...)` or
 the `evaluate_testset(...)` convenience function.
+
+## Compare a folder of model runs
+
+When an experiment folder contains one prediction directory per model/run, create
+a ranked CSV table and a readable Markdown report with:
+
+```powershell
+python -m src.eval_suite.results_table results/reference_nf4_QLoRA_size_tests
+```
+
+The command evaluates each immediate subdirectory against the annotations and writes
+`evaluation_table.csv` and `evaluation_table.md` into the input folder. Both outputs
+contain every headline metric for the full test set and the default and challenge
+subsets. They also report challenge-minus-default deltas, where negative values mean
+that performance dropped on challenge files. Rows are ranked by overall field F1.
+
+When a run contains `inference_manifest.jsonl`, raw parse and schema-valid rates
+come from that manifest rather than the template-filled prediction files. For a
+record marked `parse_error`, complete top-level target fields are conservatively
+recovered from the stored raw text for field scoring. The raw parse failure is
+still counted as a failure. This also makes older all-null fallback predictions
+evaluable without rewriting their historical artifacts.
+
+Use `--testset-path` for a different annotated test set, `--schema` for another output
+schema, or `--output-directory` to place the tables elsewhere.

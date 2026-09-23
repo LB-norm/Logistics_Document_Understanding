@@ -44,7 +44,7 @@ def _select(value: Any, key_path: str, *, source: str) -> Any:
     return selected
 
 
-def _sample_id(path: Path) -> str:
+def sample_id_from_path(path: Path) -> str:
     """Return the shared ID used by annotation and inference filenames."""
     sample_id = path.stem
     if sample_id.startswith("gt_"):
@@ -52,7 +52,7 @@ def _sample_id(path: Path) -> str:
     return _DPI_SUFFIX.sub("", sample_id)
 
 
-def _load_testset_directory(
+def load_testset_directory(
     prediction_dir: Path,
     testset_path: Path,
     *,
@@ -75,7 +75,7 @@ def _load_testset_directory(
             )
         for annotation_path in sorted(subset_dir.glob("*.json")):
             annotation_entries.append(
-                (_sample_id(annotation_path), subset, annotation_path)
+                (sample_id_from_path(annotation_path), subset, annotation_path)
             )
     if not annotation_entries:
         raise ValueError(f"No test-set annotations found under {annotation_root}")
@@ -87,7 +87,7 @@ def _load_testset_directory(
     predictions_by_id: dict[str, Path] = {}
     duplicates: dict[str, list[Path]] = {}
     for prediction_path in sorted(prediction_dir.rglob("*.json")):
-        sample_id = _sample_id(prediction_path)
+        sample_id = sample_id_from_path(prediction_path)
         if sample_id not in expected_ids:
             continue
         if sample_id in predictions_by_id:
@@ -249,7 +249,7 @@ def main() -> int:
 
     if args.predictions is not None:
         predictions, ground_truths, sample_ids, subset_labels = (
-            _load_testset_directory(
+            load_testset_directory(
                 args.predictions,
                 args.testset_path,
                 prediction_key=args.prediction_key,

@@ -4,7 +4,7 @@ import argparse
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -58,6 +58,8 @@ class ImageInferenceResult:
     raw_prediction: Any
     notes: list[str]
     schema_errors: list[str]
+    parse_error: dict[str, Any] | None = None
+    recovered_fields: list[str] = field(default_factory=list)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -417,10 +419,16 @@ def strip_thinking(text: str) -> str:
     return re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
 
 
-def extract_json_candidate(text: str) -> str | None:
+def extract_json_fragment(text: str) -> tuple[str | None, bool]:
+    """Return the first JSON-object fragment and whether its braces close.
+
+    Keeping an unterminated fragment is important for diagnostics and for the
+    deliberately conservative recovery of complete top-level fields.
+    """
+
     start = text.find("{")
     if start == -1:
-        return None
+        return None, False
 
     depth = 0
     in_string = False
@@ -443,9 +451,78 @@ def extract_json_candidate(text: str) -> str | None:
         elif char == "}":
             depth -= 1
             if depth == 0:
-                return text[start : index + 1]
+                return text[start : index + 1], True
 
-    return None
+    return text[start:], False
+
+
+def extract_json_candidate(text: str) -> str | None:
+    """Return a complete JSON object candidate, retained for API compatibility."""
+
+    fragment, structurally_complete = extract_json_fragment(text)
+    return fragment if structurally_complete else None
+
+
+def recover_complete_top_level_fields(
+    fragment: str, template: Any
+) -> tuple[dict[str, Any], list[str]]:
+    """Recover only fully decoded top-level members from a broken object.
+
+    Recovery stops at the first incomplete or ambiguous member. It does not
+    close delimiters, rename keys, repair values, or search past broken syntax.
+    """
+
+    if not isinstance(template, dict):
+        return {}, []
+
+    decoder = json.JSONDecoder()
+    index = 0
+    length = len(fragment)
+
+    def skip_whitespace(position: int) -> int:
+        while position < length and fragment[position].isspace():
+            position += 1
+        return position
+
+    index = skip_whitespace(index)
+    if index >= length or fragment[index] != "{":
+        return {}, []
+    index += 1
+
+    recovered: dict[str, Any] = {}
+    recovered_fields: list[str] = []
+    while True:
+        index = skip_whitespace(index)
+        if index >= length or fragment[index] == "}":
+            break
+        try:
+            key, key_end = decoder.raw_decode(fragment, index)
+        except json.JSONDecodeError:
+            break
+        if not isinstance(key, str):
+            break
+
+        index = skip_whitespace(key_end)
+        if index >= length or fragment[index] != ":":
+            break
+        index = skip_whitespace(index + 1)
+        try:
+            value, value_end = decoder.raw_decode(fragment, index)
+        except json.JSONDecodeError:
+            break
+
+        next_index = skip_whitespace(value_end)
+        if next_index < length and fragment[next_index] not in {",", "}"}:
+            break
+        if key in template and key not in recovered:
+            recovered[key] = value
+            recovered_fields.append(key)
+
+        if next_index >= length or fragment[next_index] == "}":
+            break
+        index = next_index + 1
+
+    return recovered, recovered_fields
 
 
 def fill_from_template(
@@ -597,16 +674,33 @@ def generate_image_prediction(
         clean_up_tokenization_spaces=False,
     )[0].strip()
     cleaned_text = strip_thinking(raw_text)
-    json_candidate = extract_json_candidate(cleaned_text)
+    json_candidate, structurally_complete = extract_json_fragment(cleaned_text)
 
     parsed_prediction = None
+    parse_error: dict[str, Any] | None = None
+    recovered_fields: list[str] = []
     if json_candidate is None:
         notes.append("The model response did not contain a detectable JSON object.")
+        parse_error = {
+            "kind": "no_json_object",
+            "message": "The response did not contain a JSON object.",
+        }
     else:
         try:
             parsed_prediction = json.loads(json_candidate)
         except json.JSONDecodeError as exc:
             notes.append(f"Failed to parse generated JSON: {exc}")
+            parse_error = {
+                "kind": (
+                    "unterminated_json"
+                    if not structurally_complete
+                    else "invalid_json"
+                ),
+                "message": exc.msg,
+                "line": exc.lineno,
+                "column": exc.colno,
+                "position": exc.pos,
+            }
     if (
         parsed_prediction is not None
         and isinstance(template, dict)
@@ -625,7 +719,19 @@ def generate_image_prediction(
             "The model response object does not contain any top-level template fields."
         )
 
-    prediction = fill_from_template(template, parsed_prediction)
+    effective_prediction = parsed_prediction
+    if parsed_prediction is None and json_candidate is not None:
+        recovered_prediction, recovered_fields = recover_complete_top_level_fields(
+            json_candidate, template
+        )
+        if recovered_fields:
+            effective_prediction = recovered_prediction
+            notes.append(
+                "Recovered complete top-level fields before the parse failure: "
+                + ", ".join(recovered_fields)
+            )
+
+    prediction = fill_from_template(template, effective_prediction)
     schema_errors = validate_json_schema(prediction, target_schema)
     if schema_errors:
         notes.append(
@@ -641,6 +747,8 @@ def generate_image_prediction(
         raw_prediction=parsed_prediction,
         notes=notes,
         schema_errors=schema_errors,
+        parse_error=parse_error,
+        recovered_fields=recovered_fields,
     )
 
 
@@ -726,6 +834,12 @@ def build_diagnostic_record(
         "cleaned_text": result.cleaned_text,
         "json_candidate": result.json_candidate,
         "raw_prediction": result.raw_prediction,
+        "parse_error": result.parse_error,
+        "recovery": {
+            "applied": bool(result.recovered_fields),
+            "recovered_fields": result.recovered_fields,
+            "recovered_field_count": len(result.recovered_fields),
+        },
         "schema_errors": result.schema_errors,
         "notes": result.notes,
     }

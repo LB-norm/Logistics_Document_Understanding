@@ -11,15 +11,42 @@ from src.Qwen.run_inference import (
     ImageInferenceResult,
     InferenceRuntime,
     build_processor_load_kwargs,
+    extract_json_fragment,
     fill_from_template,
     main,
     parse_args,
+    recover_complete_top_level_fields,
     resolve_model_id,
     resolve_processor_source,
 )
 
 
 class QwenInferenceTests(unittest.TestCase):
+    def test_recovers_only_complete_top_level_fields_from_broken_json(self) -> None:
+        template = {
+            "sender": {"name": None},
+            "items": [{"description": None}],
+            "signature": {"name": None},
+        }
+        fragment, complete = extract_json_fragment(
+            '{"sender":{"name":"ACME"},'
+            '"items":[{"description":"Steel"}],'
+            '"signature":{"name":"unfinished'
+        )
+
+        self.assertFalse(complete)
+        self.assertIsNotNone(fragment)
+        recovered, fields = recover_complete_top_level_fields(fragment, template)
+
+        self.assertEqual(
+            recovered,
+            {
+                "sender": {"name": "ACME"},
+                "items": [{"description": "Steel"}],
+            },
+        )
+        self.assertEqual(fields, ["sender", "items"])
+
     def test_default_generation_budget_handles_long_json_targets(self) -> None:
         args = parse_args([])
         expected_user_prompt = (

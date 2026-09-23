@@ -19,4 +19,5 @@ theory/
 # Inference output and training runs
 output/
 runs/
+results/
 tmp/

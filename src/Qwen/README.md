@@ -265,6 +265,12 @@ The output file is the final template-filled content JSON. Raw model text, parse
 errors, schema errors, and model provenance are stored separately in
 `document.json.diagnostics.json`.
 
+If strict JSON parsing fails, inference conservatively keeps only complete
+top-level target fields decoded before the failure. It does not repair values,
+rename keys, or continue past ambiguous syntax. The diagnostic record remains a
+`parse_error` and stores the stable error kind and recovered field names, so a
+recovered prediction never counts as a successfully parsed generation.
+
 Use `--image-paths` to process several independent images in one invocation. The
 base model and adapter are loaded only once, and each image receives its own final
 JSON file:
