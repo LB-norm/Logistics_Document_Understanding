@@ -155,6 +155,22 @@ class ConditionalDetrTests(unittest.TestCase):
             self.assertEqual(detection["category_id"], dataset.categories[detection["label_id"]]["id"])
             x1, y1, x2, y2 = detection["bbox_xyxy"]
             self.assertTrue(0 <= x1 < x2 <= 64 and 0 <= y1 < y2 <= 48)
+        from unittest.mock import patch
+        from src.conditional_detr.validation_preview import save_validation_preview
+
+        report_dir = self.root / "validation_predictions"
+        with patch.object(LayoutDetector, "predict", autospec=True,
+                          side_effect=LayoutDetector.predict) as predict:
+            report = save_validation_preview(model, processor, dataset, report_dir,
+                                             threshold=0, best_checkpoint=saved)
+            self.assertEqual(predict.call_count, len(dataset))
+        self.assertEqual(len(report["images"]), 2)
+        self.assertEqual(report["images"][0]["ground_truth"][0]["category_id"], 19)
+        self.assertEqual(report["images"][1]["ground_truth"], [])
+        self.assertEqual(json.loads((report_dir / "predictions.json").read_text()), report)
+        self.assertIn("0000.jpg", (report_dir / "index.html").read_text())
+        with Image.open(report_dir / "0000.jpg") as preview:
+            self.assertEqual(preview.size, (128, 74))
 
 
 if __name__ == "__main__":

@@ -8,6 +8,15 @@ from PIL import Image
 
 
 class LayoutDetector:
+    @classmethod
+    def from_model(cls, model, processor):
+        """Reuse the selected training model without allocating another copy."""
+        detector = cls.__new__(cls)
+        detector.device = next(model.parameters()).device
+        detector.processor = processor
+        detector.model = model.eval()
+        return detector
+
     def __init__(self, model_dir, device=None):
         import torch
         from transformers import AutoImageProcessor, ConditionalDetrForObjectDetection

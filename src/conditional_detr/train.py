@@ -32,6 +32,8 @@ def build_parser():
                         help="Mild training-only augmentation (enabled by default)")
     parser.add_argument("--max-rotation-degrees", type=float, default=3.0)
     parser.add_argument("--perspective-fraction", type=float, default=0.02)
+    parser.add_argument("--validation-preview-threshold", type=float, default=0.5,
+                        help="Confidence cutoff for the final best-model validation report")
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--resume-from-checkpoint")
     parser.add_argument("--dry-run", action="store_true", help="Validate all COCO images/boxes without loading a model")
@@ -45,6 +47,8 @@ def main(argv=None):
             raise ValueError(f"{name} must be positive")
     if args.workers < 0 or args.weight_decay < 0 or args.longest_edge < args.shortest_edge:
         raise ValueError("Invalid workers, weight decay, or resize limits")
+    if not 0 <= args.validation_preview_threshold <= 1:
+        raise ValueError("validation_preview_threshold must be in [0, 1]")
     from dataclasses import asdict
     from .augmentation import AugmentationConfig, DocumentAugmenter
 
@@ -136,6 +140,15 @@ def main(argv=None):
     trainer.save_state()
     trainer.save_metrics("train", result.metrics)
     trainer.save_metrics("eval", trainer.evaluate())
+    from .validation_preview import save_validation_preview
+
+    preview_dir = args.output_dir / "validation_predictions"
+    save_validation_preview(
+        best_model, processor, val, preview_dir,
+        threshold=args.validation_preview_threshold,
+        best_checkpoint=trainer.state.best_model_checkpoint,
+    )
+    print(f"Validation predictions and image previews saved to {preview_dir}")
 
 
 if __name__ == "__main__":

@@ -67,6 +67,16 @@ reports loss, not detection mAP. Resume with the same arguments/output directory
 and `--resume-from-checkpoint runs/conditional_detr/cmr/checkpoint-N`.
 `training_config.json`, Trainer state, and train/eval metrics are stored in the run.
 
+After training, the best model also runs inference once on every validation image.
+The run's `validation_predictions/` directory contains `predictions.json` with
+predictions, ground truth, threshold, and selected checkpoint; `index.html` is a
+local review gallery, and numbered JPEGs show ground truth on the left and
+predictions with confidence scores on the right. Boxes in JSON use original pixel
+coordinates; previews are resized for viewing. Download the entire directory to
+view the gallery locally. Default confidence cutoff is 0.5; adjust with
+`--validation-preview-threshold 0.3` to include less confident detections.
+The report reuses the selected model and performs no augmentation or training.
+
 ```bash
 python -m src.conditional_detr.inference \
   --model-dir runs/conditional_detr/cmr/best_model \
