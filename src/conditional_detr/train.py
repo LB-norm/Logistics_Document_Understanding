@@ -103,7 +103,8 @@ def main(argv=None):
         per_device_train_batch_size=args.batch_size, per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate, weight_decay=args.weight_decay,
-        lr_scheduler_type="cosine", warmup_ratio=0.05,
+        # Transformers 5 accepts a fraction here; warmup_ratio was removed.
+        lr_scheduler_type="cosine", warmup_steps=0.05,
         eval_strategy="epoch", save_strategy="epoch", save_total_limit=2,
         load_best_model_at_end=False, metric_for_best_model="eval_loss", greater_is_better=False,
         prediction_loss_only=True, remove_unused_columns=False,
