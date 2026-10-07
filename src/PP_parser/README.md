@@ -1,4 +1,55 @@
-# PP Parser / PaddleOCR-VL
+# PP Parser / OCR baseline
+
+## PP-OCR → text → Qwen3.5-9B
+
+The simple parser baseline uses standard PP-OCRv5 detection and recognition.
+It saves an intermediate representation independently of the LLM, so a later
+parser can replace this stage while retaining the text input contract.
+
+```bash
+.venv/bin/python src/PP_parser/run_ocr.py \
+  --input-paths "data/small testing/3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1.jpg" \
+  --output-dir output/pp_ocr --device cpu --lang de
+
+.venv/bin/python src/Qwen/run_inference.py \
+  --ocr-text-paths output/pp_ocr/3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1.ocr.txt \
+  --output-path output/pp_ocr/prediction.json
+```
+
+The text mode defaults to `Qwen/Qwen3.5-9B` without an adapter. It sends only
+text tokens to Qwen, including the project schema and empty skeleton; the vision
+encoder is not invoked. The shared loader still loads the full multimodal
+checkpoint, so this does not remove its vision weights from memory. Existing
+4-bit loading defaults apply; use `--no-load-in-4bit` for full precision.
+
+OCR defaults to CPU and German/Latin recognition. Dependencies are in the root
+`requirements.txt`; model weights download on first use. Local models can be
+selected with `--text-detection-model-dir` and `--text-recognition-model-dir`.
+Custom models also require both model names, e.g.
+`--text-detection-model-name PP-OCRv5_server_det` and
+`--text-recognition-model-name latin_PP-OCRv5_mobile_rec`, because Paddle ignores
+language-based model selection when custom models are supplied.
+Use `--device gpu:0` with a compatible Paddle GPU installation.
+
+Each image or PDF is one document. Multiple inputs reuse one OCR instance;
+PDF pages are joined with page markers. Outputs per input are `<stem>.ocr.txt`
+and `<stem>.ocr.json`, plus a run `manifest.json`. The versioned JSON preserves
+page order, recognition order, confidence, polygons, settings, package version,
+and inference time (excluding model initialization). Polygons refer to Paddle's
+page coordinates. No layout/table reconstruction or field detection is performed.
+Orientation correction and unwarping are disabled. `--min-confidence` defaults
+to zero to avoid dropping potential field information; OCR errors remain possible.
+An empty OCR result is saved and reported as `empty_ocr` with a nonzero exit code.
+The Qwen text path rejects empty text rather than generating from no evidence.
+
+Pass multiple files to `--ocr-text-paths` with `--output-dir` for one prediction
+per document. For a single file, use `--output-path`. Diagnostics preserve raw
+model output, parse errors, and schema errors using the existing Qwen validation
+path. Re-running a stage in the same output location replaces its artifacts.
+
+API reference: [PaddleOCR general OCR pipeline](https://www.paddleocr.ai/latest/en/version3.x/pipeline_usage/OCR.html).
+
+## PaddleOCR-VL experiments
 
 This folder currently contains PaddleOCR-VL/PP-Structure inference experiments and a
 dataset preparation script for PaddleOCR-VL fine-tuning.
@@ -9,9 +60,8 @@ dataset preparation script for PaddleOCR-VL fine-tuning.
 
 ## Current State
 
-- `PP_OCR_VL.py` is a minimal inference smoke script.
-- `PPStructureV3_parser.py` is an inference experiment and currently contains
-  unresolved Git conflict markers.
+- `run_ocr.py` is the plain PP-OCR baseline described above.
+- `PPStructureV3_parser.py` is a PaddleOCR-VL inference experiment.
 - `PP_vis.py` saves PaddleOCR visualization images.
 - `prepare_finetune.py` converts the existing project image/annotation pairs into
   ERNIEKit SFT JSONL for PaddleOCR-VL VLM fine-tuning.

@@ -11,6 +11,7 @@ documents. The current dataset and schema cover CMR documents and German deliver
 | Qwen | LoRA/QLoRA fine-tuning of Qwen vision-language models | [Qwen](src/Qwen/README.md) |
 | PaddleOCR-VL | Inference and ERNIEKit data preparation | [PaddleOCR-VL](src/PP_parser/README.md) |
 | Dataset tools | Dataset generation, auditing, and deterministic splits | [Dataset utilities](src/utils/dataset_utils.py) |
+| Image preprocessing | Page perspective correction, deskew, and optional upright orientation | [Document rectification](src/preprocessing/README.md) |
 
 The output format is defined by
 [content.empty.json](json_schema/content.empty.json) and

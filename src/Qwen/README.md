@@ -11,7 +11,12 @@ selected resolution and document sequence lengths.
   and Trainer integration
 - `experiment_config.py`: validation and loading for versioned experiment/queue JSON files
 - `run_qwen_experiment_queue.py`: sequential single-GPU experiment queue runner
-- `run_inference.py`: load a saved adapter and process one image
+- `run_inference.py`: process document images or OCR text, with an optional saved adapter
+
+For the parser baseline, `--ocr-text-paths` accepts UTF-8 OCR output and defaults
+to the unadapted `Qwen/Qwen3.5-9B` checkpoint. The prompt includes the schema and
+skeleton, and inference uses text tokens only. See the
+[PP-OCR instructions](../PP_parser/README.md) for both pipeline stages.
 
 Tracked experiment definitions live in `experiments/qwen/`. See its README for the
 JSON formats and queue commands.
