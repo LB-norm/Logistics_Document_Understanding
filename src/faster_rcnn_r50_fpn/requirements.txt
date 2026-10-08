@@ -1,0 +1,4 @@
+# Install alongside repository requirements; use a matching torch/torchvision pair.
+torch>=2.6
+torchvision>=0.21
+pycocotools>=2.0.7

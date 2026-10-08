@@ -12,6 +12,7 @@ documents. The current dataset and schema cover CMR documents and German deliver
 | PaddleOCR-VL | Inference and ERNIEKit data preparation | [PaddleOCR-VL](src/PP_parser/README.md) |
 | Conditional DETR | COCO document region detection and fine-tuning | [Conditional DETR](src/conditional_detr/README.md) |
 | YOLO11s | COCO document region detection with matching prediction/review output | [YOLO11s](src/yolo_v11s/README.md) |
+| Faster R-CNN R50-FPN | COCO document region detection with matching prediction/review output | [Faster R-CNN](src/faster_rcnn_r50_fpn/README.md) |
 | Dataset tools | Dataset generation, auditing, and deterministic splits | [Dataset utilities](src/utils/dataset_utils.py) |
 | Image preprocessing | Page perspective correction, deskew, and optional upright orientation | [Document rectification](src/preprocessing/README.md) |
 
