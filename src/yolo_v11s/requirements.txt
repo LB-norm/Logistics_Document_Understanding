@@ -1,0 +1,2 @@
+# Install alongside the repository requirements. Tested with 8.4.174.
+ultralytics>=8.4.174,<9
