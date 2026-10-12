@@ -1,53 +1,166 @@
-# PP Parser / OCR baseline
+# PP-OCRv6 baseline
 
-## PP-OCR → text → Qwen3.5-9B
+The OCR stage uses **PP-OCRv6 medium detection and recognition** by default.
+It provides reusable text and geometry for `image → OCR (+ separate layout) → LLM → JSON`,
+and prepares OCR/ground-truth pairs from existing project datasets.
 
-The simple parser baseline uses standard PP-OCRv5 detection and recognition.
-It saves an intermediate representation independently of the LLM, so a later
-parser can replace this stage while retaining the text input contract.
+## Setup
+
+```bash
+.venv/bin/python -m pip install 'paddleocr>=3.7,<4' 'paddlepaddle>=3.2' Pillow numpy PyMuPDF
+```
+
+The CPU Paddle wheel is sufficient for CPU inference. For `--device gpu:0`, install
+an appropriate `paddlepaddle-gpu` wheel for your CUDA environment instead of the CPU
+wheel. Model weights download on first inference. Local models can be supplied via
+`--text-detection-model-dir` and `--text-recognition-model-dir`; choose the matching
+`--model-size medium|small|tiny` (default: medium). Each tier uses an explicit v6
+model pair, independent of language-based selection. The recognizer is multilingual;
+there is no `--lang` switch. Medium/small support 50 languages, including German,
+English, French, Czech and Polish. Cyrillic and Arabic need other recognition models.
+
+If the default Hugging Face download stalls, Paddle's official host can be selected
+with `PADDLE_PDX_MODEL_SOURCE=bos` in the command environment. To keep weights in the
+project, set `PADDLE_PDX_CACHE_HOME` to a writable cache directory under `output/`.
+
+## Use inside a multipart pipeline
+
+```python
+from pathlib import Path
+from src.PP_parser import OCRConfig, OCRExtractor, save_ocr
+
+ocr = OCRExtractor(OCRConfig(device="gpu:0"))  # construct once; weights load lazily
+result = ocr.extract("document.png")
+text = result["text"]                       # pass to your text-only LLM
+spans = result["pages"][0]["lines"]         # combine with your layout detections
+
+# Also accepts a PIL image or a uint8 OpenCV BGR/grayscale ndarray:
+# result = ocr.extract(rectified_image, source_id="cmr-001")
+# Saving is optional and separate from inference:
+# save_ocr(result, Path("output/ocr"), "cmr-001")
+```
+
+Extraction does not invoke an LLM or write files. Reuse one extractor sequentially
+across documents. Each line has an ID (unique within its document), index, text,
+recognition confidence, a four-point polygon, and an axis-aligned `bbox` in
+`[xmin, ymin, xmax, ymax]` form. Pages carry `page_number`, `width`, `height`, and
+`coordinate_space: "input_image_pixels"`. IDs follow `p0001-l000000`, preserving
+Paddle recognition order; they are stable for an identical extraction, not across
+changed models or thresholds. This order is not a semantic reading-order guarantee.
+
+PIL images use RGB; arrays use BGR or grayscale. Raster pixels are not resized by
+this adapter. Paddle's detector may internally resize, and the effective detection
+parameters are recorded on each page. Returned geometry refers to the input page.
+Document rotation, unwarping and text-line orientation classification are disabled.
+Run OCR and layout on the **same page image**, including any shared rectification.
+If one stage uses different preprocessing, map its coordinates using the saved transform.
+
+PDFs are rendered explicitly by PyMuPDF at `--pdf-dpi 240`; coordinates refer to the
+rendered page pixels, not PDF points. Multiple pages remain separate and text includes
+page markers. Multi-frame raster files are rejected; supply individual pages or a PDF.
+The document JSON has `format_version: 2`, source provenance, settings, actual package
+versions and inference time (including image loading/rendering, excluding model startup).
+Both the document and each page record `inference_seconds` and `vram` with peak
+allocated/reserved Paddle CUDA memory in bytes and GiB. Page timing measures OCR
+and result normalization; document timing also includes image loading/rendering.
+Document VRAM uses the maximum per-device page peak. CPU runs mark VRAM
+unavailable. PaddleOCR-VL records these metrics in `inference_summary.json`.
+`--min-confidence` defaults to zero; empty OCR is retained and reported as a failure.
+
+## Standalone OCR and downstream inference
 
 ```bash
 .venv/bin/python src/PP_parser/run_ocr.py \
   --input-paths "data/small testing/3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1.jpg" \
-  --output-dir output/pp_ocr --device cpu --lang de
+  --output-dir output/pp_ocr_v6 --device cpu
 
 .venv/bin/python src/Qwen/run_inference.py \
-  --ocr-text-paths output/pp_ocr/3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1.ocr.txt \
-  --output-path output/pp_ocr/prediction.json
+  --ocr-text-paths output/pp_ocr_v6/3f3fdb18-c151-43dd-b54a-da34249241f6_CMR_page_1.ocr.txt \
+  --output-path output/pp_ocr_v6/prediction.json
 ```
 
-The text mode defaults to `Qwen/Qwen3.5-9B` without an adapter. It sends only
-text tokens to Qwen, including the project schema and empty skeleton; the vision
-encoder is not invoked. The shared loader still loads the full multimodal
-checkpoint, so this does not remove its vision weights from memory. Existing
-4-bit loading defaults apply; use `--no-load-in-4bit` for full precision.
+Multiple image/PDF paths reuse one OCR instance. Each input produces `<stem>.ocr.json`
+and `<stem>.ocr.txt`; `manifest.json` records successes, empty OCR and errors. Stems
+must be unique. A nonzero exit status indicates failed or empty OCR. Use `--dry-run`
+to validate input paths without loading OCR. Existing output requires `--overwrite`.
 
-OCR defaults to CPU and German/Latin recognition. Dependencies are in the root
-`requirements.txt`; model weights download on first use. Local models can be
-selected with `--text-detection-model-dir` and `--text-recognition-model-dir`.
-Custom models also require both model names, e.g.
-`--text-detection-model-name PP-OCRv5_server_det` and
-`--text-recognition-model-name latin_PP-OCRv5_mobile_rec`, because Paddle ignores
-language-based model selection when custom models are supplied.
-Use `--device gpu:0` with a compatible Paddle GPU installation.
+The Qwen text path uses only text tokens, with the project schema/skeleton and the
+shared OCR prompt. Its default is `Qwen/Qwen3.5-9B`; the full multimodal checkpoint
+is still loaded, including vision weights. The input contains no visual evidence.
 
-Each image or PDF is one document. Multiple inputs reuse one OCR instance;
-PDF pages are joined with page markers. Outputs per input are `<stem>.ocr.txt`
-and `<stem>.ocr.json`, plus a run `manifest.json`. The versioned JSON preserves
-page order, recognition order, confidence, polygons, settings, package version,
-and inference time (excluding model initialization). Polygons refer to Paddle's
-page coordinates. No layout/table reconstruction or field detection is performed.
-Orientation correction and unwarping are disabled. `--min-confidence` defaults
-to zero to avoid dropping potential field information; OCR errors remain possible.
-An empty OCR result is saved and reported as `empty_ocr` with a nonzero exit code.
-The Qwen text path rejects empty text rather than generating from no evidence.
+## Prepare train/validation data for downstream LLM fine-tuning
 
-Pass multiple files to `--ocr-text-paths` with `--output-dir` for one prediction
-per document. For a single file, use `--output-path`. Diagnostics preserve raw
-model output, parse errors, and schema errors using the existing Qwen validation
-path. Re-running a stage in the same output location replaces its artifacts.
+```bash
+# Validate all source metadata and annotations without running OCR:
+.venv/bin/python src/PP_parser/run_ocr.py \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707 \
+  --output-dir data/ocr_v6_cmr --dry-run
 
-API reference: [PaddleOCR general OCR pipeline](https://www.paddleocr.ai/latest/en/version3.x/pipeline_usage/OCR.html).
+# Run OCR on existing train/val splits:
+.venv/bin/python src/PP_parser/run_ocr.py \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707 \
+  --output-dir data/ocr_v6_cmr --splits train val --device gpu:0
+```
+
+`--splits` defaults to `train val`; specify `train validation` or another existing
+split name as needed. The source split membership and metadata order are preserved.
+Paths in source metadata can be absolute, dataset-root-relative or split-relative.
+`annotation["content"]` supplies the assistant answer by default; use
+`--annotation-target-key` for another dotted key or `root`. Use `--schema-path` and
+`--template-path` matching that target. `--limit 2` selects the first two examples
+per split for a smoke run. Missing paths/labels and duplicate IDs are rejected before
+OCR or output writes. Source and output directories must not overlap.
+
+```text
+data/ocr_v6_cmr/
+  train.jsonl
+  val.jsonl
+  schema.json
+  template.json
+  preparation_summary.json
+  train/
+    metadata.jsonl
+    ocr/000000_<image-stem>.ocr.json
+    ocr/000000_<image-stem>.ocr.txt
+  val/
+    metadata.jsonl
+    ocr/...
+```
+
+Each split JSONL contains `id`, `source_split`, `text`, `target`, `messages`, and
+relative links to its OCR artifacts. `messages` is a text-only chat record with
+system/user/assistant roles and plain-string content. System/user prompts match the
+existing OCR inference contract, including the supplied schema/skeleton; only the
+assistant message contains the final JSON target. The OCR input is generated from
+pixels, never ground-truth labels. Full geometric evidence is kept in `.ocr.json`
+for future layout fusion rather than exposed to the text-only baseline.
+
+These records are prepared for a **text-only SFT loader**. The current project Qwen
+VLM training launcher still requires images and is not a text-only trainer. When
+connecting a downstream trainer, tokenize `messages`, supervise assistant tokens,
+and keep the schema/prompt consistent with inference. No LLM training is launched
+by this command.
+
+Split metadata preserves every selected example, including `ok`, `empty_ocr`, and
+`ocr_error` statuses, with absolute source paths for provenance. Empty/failed OCR
+is excluded from the fine-tuning JSONL and counted in the summary; the command
+returns nonzero if any occurred. No source images or labels are copied or modified.
+`--overwrite` rewrites current outputs without deleting the directory; old unreferenced
+artifacts may remain. Use current metadata/JSONL membership, not a directory glob.
+
+## Verification
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p 'test_pp_ocr.py' -v
+```
+
+Tests cover the API, input color/coordinate contract, PDF rendering, lazy v6
+initialization, split/target preservation, error handling, CLI execution, and the
+text-only downstream inference path. Most tests inject a deterministic OCR backend;
+they verify integration behavior without downloading weights or asserting OCR accuracy.
+
+Sources: [official OCR API](https://www.paddleocr.ai/latest/en/version3.x/pipeline_usage/OCR.html),
+[PP-OCRv6 technical report](https://arxiv.org/abs/2606.13108).
 
 ## PaddleOCR-VL experiments
 

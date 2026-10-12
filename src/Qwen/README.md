@@ -293,6 +293,13 @@ unique to prevent accidental output overwrites. `--template-path` and
 `--schema-path` can select another output contract; their defaults are
 `json_schema/content.empty.json` and `json_schema/content.schema.json`.
 
+Each diagnostic record also contains `inference_seconds` and `vram` with
+per-image peak allocated/reserved CUDA memory in bytes and GiB. Timing includes
+input preprocessing, generation and JSON normalization, excluding model loading
+and output writes. A single input uses `<prediction>.json.diagnostics.json`.
+The prediction JSON itself retains only the target schema. CPU runs record time
+and mark VRAM unavailable. Image and OCR-text inference use the same tracking.
+
 Inference uses the same default system and user prompts as project fine-tuning.
 They can be overridden with `--system-prompt` and `--user-prompt` for checkpoints
 trained with a different prompt contract. The default `--max-new-tokens 2048`

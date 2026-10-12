@@ -246,6 +246,8 @@ class FasterRCNNLayoutTests(unittest.TestCase):
             saved = self.root / "run/best_model"
             detector = LayoutDetector(saved, "cpu")
             prediction = detector.predict(self.root / "val/one.png", threshold=0)
+            self.assertGreaterEqual(prediction["inference_seconds"], 0)
+            self.assertFalse(prediction["vram"]["available"])
             self.assertTrue(prediction["detections"])
             for detection in prediction["detections"]:
                 self.assertEqual(detection["category_id"], self.train.categories[detection["label_id"]]["id"])
@@ -253,7 +255,10 @@ class FasterRCNNLayoutTests(unittest.TestCase):
                 self.assertTrue(0 <= x1 < x2 <= 64 and 0 <= y1 < y2 <= 48)
             infer(["--model-dir", str(saved), "--images", str(self.root / "val/one.png"),
                    "--output", str(self.root / "outputs/layouts.json"), "--device", "cpu", "--threshold", "0"])
-        self.assertEqual(json.loads((self.root / "outputs/layouts.json").read_text()), [prediction])
+        saved_prediction = json.loads((self.root / "outputs/layouts.json").read_text())[0]
+        self.assertGreaterEqual(saved_prediction["inference_seconds"], 0)
+        self.assertEqual({k: v for k, v in saved_prediction.items() if k != "inference_seconds"},
+                         {k: v for k, v in prediction.items() if k != "inference_seconds"})
         report = json.loads((self.root / "run/validation_predictions/predictions.json").read_text())
         self.assertEqual(len(report["images"]), 2)
         self.assertEqual(report["images"][0]["ground_truth"][0]["category_id"], 19)

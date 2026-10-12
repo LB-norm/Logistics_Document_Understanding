@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.utils.inference_tracking import InferenceTracker
+
 DEFAULT_SMALL_TEST_IMAGE_PATH = (
     REPO_ROOT
     / "data"
@@ -318,57 +323,59 @@ def main() -> int:
     model.to(args.device)
     model.eval()
 
-    image = load_image(args.image_path, image_module)
-    pixel_values = processor(image, return_tensors="pt").pixel_values.to(args.device)
+    with InferenceTracker(torch, device=args.device) as tracker:
+        image = load_image(args.image_path, image_module)
+        pixel_values = processor(image, return_tensors="pt").pixel_values.to(args.device)
 
-    decoder_input_ids = processor.tokenizer(
-        args.task_prompt,
-        add_special_tokens=False,
-        return_tensors="pt",
-    ).input_ids.to(args.device)
+        decoder_input_ids = processor.tokenizer(
+            args.task_prompt,
+            add_special_tokens=False,
+            return_tensors="pt",
+        ).input_ids.to(args.device)
 
-    max_supported_length = getattr(
-        model.decoder.config, "max_position_embeddings", args.max_length
-    )
-    max_length = min(args.max_length, max_supported_length)
-
-    generation_kwargs: dict[str, Any] = {
-        "max_length": max_length,
-        "num_beams": args.num_beams,
-        "pad_token_id": processor.tokenizer.pad_token_id,
-        "eos_token_id": processor.tokenizer.eos_token_id,
-        "use_cache": True,
-        "return_dict_in_generate": True,
-    }
-
-    if processor.tokenizer.unk_token_id is not None:
-        generation_kwargs["bad_words_ids"] = [[processor.tokenizer.unk_token_id]]
-
-    notes: list[str] = []
-    prompt_warning = detect_prompt_warning(args.task_prompt, processor)
-    if prompt_warning:
-        notes.append(prompt_warning)
-
-    if args.task_prompt == DEFAULT_TASK_PROMPT and args.model_id == DEFAULT_MODEL_ID:
-        notes.append(
-            "This default checkpoint is fine-tuned for CORD receipt parsing, not for German delivery notes. "
-            "It is useful as a runnable Donut baseline, but it will not reliably output the custom Lieferschein JSON "
-            "until you fine-tune a checkpoint on this schema."
+        max_supported_length = getattr(
+            model.decoder.config, "max_position_embeddings", args.max_length
         )
+        max_length = min(args.max_length, max_supported_length)
 
-    with torch.inference_mode():
-        outputs = model.generate(
-            pixel_values,
-            decoder_input_ids=decoder_input_ids,
-            **generation_kwargs,
-        )
+        generation_kwargs: dict[str, Any] = {
+            "max_length": max_length,
+            "num_beams": args.num_beams,
+            "pad_token_id": processor.tokenizer.pad_token_id,
+            "eos_token_id": processor.tokenizer.eos_token_id,
+            "use_cache": True,
+            "return_dict_in_generate": True,
+        }
 
-    raw_sequence = processor.batch_decode(outputs.sequences)[0]
-    cleaned_sequence = clean_sequence(raw_sequence, processor)
-    raw_prediction = parse_sequence_to_json(cleaned_sequence, processor)
-    guided_prediction = fill_from_template(template, raw_prediction)
+        if processor.tokenizer.unk_token_id is not None:
+            generation_kwargs["bad_words_ids"] = [[processor.tokenizer.unk_token_id]]
+
+        notes: list[str] = []
+        prompt_warning = detect_prompt_warning(args.task_prompt, processor)
+        if prompt_warning:
+            notes.append(prompt_warning)
+
+        if args.task_prompt == DEFAULT_TASK_PROMPT and args.model_id == DEFAULT_MODEL_ID:
+            notes.append(
+                "This default checkpoint is fine-tuned for CORD receipt parsing, not for German delivery notes. "
+                "It is useful as a runnable Donut baseline, but it will not reliably output the custom Lieferschein JSON "
+                "until you fine-tune a checkpoint on this schema."
+            )
+
+        with torch.inference_mode():
+            outputs = model.generate(
+                pixel_values,
+                decoder_input_ids=decoder_input_ids,
+                **generation_kwargs,
+            )
+
+        raw_sequence = processor.batch_decode(outputs.sequences)[0]
+        cleaned_sequence = clean_sequence(raw_sequence, processor)
+        raw_prediction = parse_sequence_to_json(cleaned_sequence, processor)
+        guided_prediction = fill_from_template(template, raw_prediction)
 
     result = {
+        **tracker.metrics,
         "model": {
             "model_id": args.model_id,
             "model_revision": args.model_revision,

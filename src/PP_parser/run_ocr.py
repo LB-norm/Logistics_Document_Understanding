@@ -1,127 +1,100 @@
-"""Plain PP-OCR baseline: document -> reusable OCR JSON and UTF-8 text."""
+"""Run PP-OCRv6 on documents or prepare an OCR dataset for downstream LLM SFT."""
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-import time
-from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.Qwen.run_inference import write_json
+from src.PP_parser.ocr import OCRConfig, OCRExtractor, save_ocr, write_json
+from src.PP_parser.ocr_dataset import ensure_output_directory, prepare_ocr_dataset
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-paths", type=Path, nargs="+", required=True,
-                        help="Images or PDFs; each file is one document.")
-    parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "output" / "pp_ocr")
-    parser.add_argument("--device", default="cpu", help="Paddle device, e.g. cpu or gpu:0.")
-    parser.add_argument("--lang", default="de", help="Recognition language (default: de).")
-    parser.add_argument("--ocr-version", default="PP-OCRv5", choices=["PP-OCRv5", "PP-OCRv4", "PP-OCRv3"])
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--input-paths", type=Path, nargs="+", help="Images or PDFs, one document per file.")
+    inputs.add_argument("--dataset-root", type=Path, help="Project dataset with split/metadata.jsonl files.")
+    parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "output/pp_ocr_v6")
+    parser.add_argument("--device", default="cpu", help="cpu or gpu:0 (requires a compatible Paddle GPU wheel).")
+    parser.add_argument("--model-size", default="medium", choices=["medium", "small", "tiny"])
     parser.add_argument("--text-detection-model-dir", type=Path)
     parser.add_argument("--text-recognition-model-dir", type=Path)
-    parser.add_argument("--text-detection-model-name")
-    parser.add_argument("--text-recognition-model-name")
     parser.add_argument("--min-confidence", type=float, default=0.0)
+    parser.add_argument("--pdf-dpi", type=int, default=240)
+    parser.add_argument("--splits", nargs="+", default=["train", "val"], help="Existing splits to prepare; default: train val.")
+    parser.add_argument("--annotation-target-key", default="content", help="Dotted annotation key, or root.")
+    parser.add_argument("--schema-path", type=Path, default=REPO_ROOT / "json_schema/content.schema.json")
+    parser.add_argument("--template-path", type=Path, default=REPO_ROOT / "json_schema/content.empty.json")
+    parser.add_argument("--limit", type=int, help="First N metadata rows per split, for a smoke run.")
+    parser.add_argument("--dry-run", action="store_true", help="Validate inputs without loading OCR or writing files.")
+    parser.add_argument("--overwrite", action="store_true", help="Allow replacing artifacts in a nonempty output directory.")
     args = parser.parse_args(argv)
-    if not 0 <= args.min_confidence <= 1:
-        parser.error("--min-confidence must be between 0 and 1")
-    if (args.text_detection_model_dir or args.text_recognition_model_dir
-            or args.text_detection_model_name or args.text_recognition_model_name):
-        if not (args.text_detection_model_name and args.text_recognition_model_name):
-            parser.error("Custom models require both --text-detection-model-name and "
-                         "--text-recognition-model-name; Paddle ignores --lang for custom models")
+    try:
+        config_from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.limit is not None and (args.limit < 1 or args.dataset_root is None):
+        parser.error("--limit must be positive and requires --dataset-root")
     return args
 
 
-def normalize_page(result: Any, page_number: int) -> dict[str, Any]:
-    """Keep Paddle's recognition order and aligned, filtered recognition polygons."""
-    payload = getattr(result, "json", result)
-    if callable(payload):
-        payload = payload()
-    if isinstance(payload, str):
-        payload = json.loads(payload)
-    payload = payload.get("res", payload)
-    texts = payload["rec_texts"]
-    scores = payload["rec_scores"]
-    polygons = payload["rec_polys"]
-    if not len(texts) == len(scores) == len(polygons):
-        raise ValueError("PP-OCR returned misaligned texts, scores, and polygons")
-    lines = [
-        {"text": str(text), "confidence": float(score),
-         "polygon": polygon.tolist() if hasattr(polygon, "tolist") else polygon}
-        for text, score, polygon in zip(texts, scores, polygons, strict=True)
-    ]
-    return {"page_number": page_number, "lines": lines,
-            "text": "\n".join(line["text"] for line in lines if line["text"].strip())}
-
-
-def extract_document(pipeline: Any, path: Path, min_confidence: float) -> dict[str, Any]:
-    started = time.perf_counter()
-    pages = [normalize_page(result, index + 1) for index, result in enumerate(
-        pipeline.predict(input=str(path), text_rec_score_thresh=min_confidence)
-    )]
-    if not pages:
-        raise RuntimeError("PP-OCR returned no pages")
-    text = "\n\n".join(
-        (f"[Page {page['page_number']}]\n" if len(pages) > 1 else "") + page["text"]
-        for page in pages
+def config_from_args(args: argparse.Namespace) -> OCRConfig:
+    return OCRConfig(
+        device=args.device, model_size=args.model_size, min_confidence=args.min_confidence,
+        pdf_dpi=args.pdf_dpi, text_detection_model_dir=args.text_detection_model_dir,
+        text_recognition_model_dir=args.text_recognition_model_dir,
     )
-    return {"format_version": 1, "source_path": str(path.resolve()),
-            "parser": "pp_ocr", "pages": pages, "text": text,
-            "has_text": any(page["text"].strip() for page in pages),
-            "inference_seconds": time.perf_counter() - started}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    extractor = OCRExtractor(config_from_args(args))
+    if args.dataset_root is not None:
+        summary = prepare_ocr_dataset(
+            extractor, args.dataset_root, args.output_dir, splits=args.splits,
+            annotation_target_key=args.annotation_target_key, overwrite=args.overwrite,
+            dry_run=args.dry_run, limit=args.limit,
+            schema=json.loads(args.schema_path.read_text(encoding="utf-8")),
+            template=json.loads(args.template_path.read_text(encoding="utf-8")),
+        )
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return int(any(split.get("empty_ocr", 0) or split.get("ocr_error", 0) for split in summary["splits"].values()))
     stems = [path.stem for path in args.input_paths]
     if len(set(stems)) != len(stems):
         raise ValueError("Input files must have unique stems to avoid output collisions")
     for path in args.input_paths:
         if not path.is_file():
             raise FileNotFoundError(path)
-    from paddleocr import PaddleOCR
-
-    settings = {"device": args.device, "lang": args.lang, "ocr_version": args.ocr_version,
-                "use_doc_orientation_classify": False, "use_doc_unwarping": False,
-                "use_textline_orientation": False}
-    for key in ("text_detection_model_dir", "text_recognition_model_dir",
-                "text_detection_model_name", "text_recognition_model_name"):
-        if getattr(args, key) is not None:
-            settings[key] = str(getattr(args, key))
-    pipeline = PaddleOCR(**settings)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    failed = False
+    if args.dry_run:
+        print(f"Validated {len(stems)} input documents; no OCR performed.")
+        return 0
+    ensure_output_directory(args.output_dir, overwrite=args.overwrite)
     records = []
     for path in args.input_paths:
-        json_path = args.output_dir / f"{path.stem}.ocr.json"
-        text_path = args.output_dir / f"{path.stem}.ocr.txt"
+        record = {"source_path": str(path.resolve())}
         try:
-            document = extract_document(pipeline, path, args.min_confidence)
-            document["settings"] = {**settings, "min_confidence": args.min_confidence}
-            document["paddleocr_version"] = version("paddleocr")
-            write_json(json_path, document)
-            text_path.write_text(document["text"] + "\n", encoding="utf-8")
-            status = "ok" if document["has_text"] else "empty_ocr"
-            records.append({"source_path": str(path.resolve()), "status": status,
-                            "ocr_json_path": str(json_path), "ocr_text_path": str(text_path)})
-            failed |= status != "ok"
-            print(f"{status}: {text_path}")
+            document = extractor.extract(path)
+            json_path, text_path = save_ocr(document, args.output_dir, path.stem)
+            record.update({"status": "ok" if document["has_text"] else "empty_ocr",
+                           "ocr_json_path": str(json_path), "ocr_text_path": str(text_path)})
         except Exception as exc:
-            failed = True
-            records.append({"source_path": str(path.resolve()), "status": "ocr_error",
-                            "error": f"{type(exc).__name__}: {exc}"})
-            print(f"OCR failed for {path}: {exc}", file=sys.stderr)
+            record.update({"status": "ocr_error", "error": f"{type(exc).__name__}: {exc}"})
+            print(f"OCR failed for {path}: {record['error']}", file=sys.stderr)
+        records.append(record)
+        print(f"{record['status']}: {path}", flush=True)
     write_json(args.output_dir / "manifest.json", records)
-    return int(failed)
+    return int(any(record["status"] != "ok" for record in records))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        raise SystemExit(1)

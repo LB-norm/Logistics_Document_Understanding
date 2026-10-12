@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.utils.inference_tracking import InferenceTracker
 from src.utils.image_resolution import (
     DEFAULT_IMAGE_RESOLUTION,
     IMAGE_RESOLUTION_CHOICES,
@@ -48,6 +49,8 @@ class InferenceSummary:
     max_new_tokens: int | None
     layout_detection_model_dir: str | None
     vl_rec_model_dir: str | None
+    inference_seconds: float
+    vram: dict[str, Any]
 
 
 def parse_args() -> argparse.Namespace:
@@ -327,8 +330,10 @@ def write_manifest(
     results: list[Any],
     output_dir: Path,
     vis_dir: Path | None,
+    metrics: dict[str, Any],
 ) -> InferenceSummary:
     summary = InferenceSummary(
+        **metrics,
         image_path=str(args.image_path),
         output_dir=str(output_dir),
         visualization_dir=str(vis_dir) if vis_dir is not None else None,
@@ -371,9 +376,10 @@ def run_inference(args: argparse.Namespace) -> InferenceSummary:
 
     PaddleOCRVL = load_paddleocr_vl()
     pipeline = PaddleOCRVL(**build_pipeline_kwargs(args))
-    results = as_result_list(
-        pipeline.predict(str(image_path), **build_predict_kwargs(args))
-    )
+    with InferenceTracker(backend="paddle", device=args.device) as tracker:
+        results = as_result_list(
+            pipeline.predict(str(image_path), **build_predict_kwargs(args))
+        )
     if not results:
         raise RuntimeError("PaddleOCR-VL did not return any results.")
 
@@ -385,7 +391,7 @@ def run_inference(args: argparse.Namespace) -> InferenceSummary:
         save_markdown=not args.no_markdown,
         print_results=args.print_results,
     )
-    return write_manifest(args, results, output_dir, vis_dir)
+    return write_manifest(args, results, output_dir, vis_dir, tracker.metrics)
 
 
 def main() -> int:

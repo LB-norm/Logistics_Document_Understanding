@@ -126,6 +126,8 @@ class YoloLayoutTests(unittest.TestCase):
         result = detector.predict(self.root / "train/one.png")
         self.assertEqual((result["width"], result["height"]), (64, 48))
         self.assertEqual([d["category_id"] for d in result["detections"]], [3, 19])
+        self.assertGreaterEqual(result["inference_seconds"], 0)
+        self.assertIn("vram", result)
         self.assertEqual(result["detections"][1]["bbox_xywh"], [0., 8., 64., 40.])
         self.assertIsInstance(model.predict.call_args.kwargs["source"], Image.Image)
         self.assertFalse(model.predict.call_args.kwargs["augment"])

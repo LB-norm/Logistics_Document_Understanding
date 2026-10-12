@@ -9,6 +9,7 @@ documents. The current dataset and schema cover CMR documents and German deliver
 | --- | --- | --- |
 | Donut | Full fine-tuning of the Donut vision encoder-decoder model | [Donut](src/Donut/README.md) |
 | Qwen | LoRA/QLoRA fine-tuning of Qwen vision-language models | [Qwen](src/Qwen/README.md) |
+| PP-OCRv6 | Reusable OCR with coordinates and train/val OCR dataset preparation | [OCR baseline](src/PP_parser/README.md) |
 | PaddleOCR-VL | Inference and ERNIEKit data preparation | [PaddleOCR-VL](src/PP_parser/README.md) |
 | Conditional DETR | COCO document region detection and fine-tuning | [Conditional DETR](src/conditional_detr/README.md) |
 | YOLO11s | COCO document region detection with matching prediction/review output | [YOLO11s](src/yolo_v11s/README.md) |
@@ -21,6 +22,33 @@ The output format is defined by
 [content.schema.json](json_schema/content.schema.json).
 
 Datasets, downloaded models, training runs, and inference output are ignored by Git.
+
+## Inference measurements
+
+Standalone Qwen, Donut, YOLO, Conditional DETR, Faster R-CNN, PP-OCR and
+PaddleOCR-VL inference automatically records `inference_seconds` and `vram` for
+each image. Timing covers the image inference call, including preprocessing and
+postprocessing, and excludes explicit model loading and saving output files.
+GPU work is synchronized before and after timing. The first call may include
+framework warmup; no extra warmup pass is performed.
+
+`vram.devices` contains per-device `peak_allocated_bytes`, `peak_reserved_bytes`
+and their GiB equivalents. Peaks reset for each image and include resident model
+weights and cached memory reservations. These are process-local PyTorch/Paddle
+allocator measurements, not total GPU board usage. CPU runs have
+`vram.available: false` and an empty device list. Reuse models sequentially;
+allocator peak counters are shared by the process.
+
+| Pipeline | Metrics location |
+| --- | --- |
+| Qwen image or OCR-text inference | `inference_manifest.jsonl`, or `<prediction>.json.diagnostics.json` for one input |
+| YOLO / Conditional DETR / Faster R-CNN | Each image prediction in the output JSON, including layout validation previews |
+| Donut | Top level of the inference result JSON |
+| PP-OCR | Document and individual pages in `<stem>.ocr.json`; page timing excludes file loading/PDF rendering, document timing includes it |
+| PaddleOCR-VL | `inference_summary.json` |
+
+For multi-page OCR documents, document VRAM is the maximum per-device page peak.
+Measurements are generated for new inference runs; existing outputs are unchanged.
 
 ## Image-resolution presets
 

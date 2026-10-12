@@ -149,6 +149,8 @@ class ConditionalDetrTests(unittest.TestCase):
         model.save_pretrained(saved)
         processor.save_pretrained(saved)
         predictions = LayoutDetector(saved, "cpu").predict(self.root / "one.png", threshold=0)
+        self.assertGreaterEqual(predictions["inference_seconds"], 0)
+        self.assertFalse(predictions["vram"]["available"])
         self.assertEqual((predictions["width"], predictions["height"]), (64, 48))
         self.assertTrue(predictions["detections"])
         for detection in predictions["detections"]:

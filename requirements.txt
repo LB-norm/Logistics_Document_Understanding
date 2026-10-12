@@ -12,8 +12,8 @@ sentencepiece>=0.2
 numpy>=1.26
 opencv-python-headless>=4.10
 
-# PaddleOCR-VL parser and visualizations
-paddleocr>=3.4
+# PP-OCRv6 baseline, PaddleOCR-VL parser and visualizations
+paddleocr>=3.7,<4
 paddlepaddle>=3.2
 matplotlib>=3.8
 

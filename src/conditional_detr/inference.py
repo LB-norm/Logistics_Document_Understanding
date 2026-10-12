@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from src.utils.inference_tracking import InferenceTracker
+
 
 class LayoutDetector:
     @classmethod
@@ -32,32 +34,35 @@ class LayoutDetector:
 
         if not 0 <= threshold <= 1:
             raise ValueError("threshold must be between 0 and 1")
-        with Image.open(image_path) as source:
-            image = source.convert("RGB")
-        width, height = image.size
-        inputs = self.processor(images=image, return_tensors="pt").to(self.device)
-        with torch.inference_mode():
-            outputs = self.model(**inputs)
-        result = self.processor.post_process_object_detection(
-            outputs, threshold=threshold,
-            target_sizes=torch.tensor([[height, width]], device=self.device),
-        )[0]
-        categories = getattr(self.model.config, "layout_categories", None)
-        detections = []
-        for score, label, box in zip(result["scores"].tolist(), result["labels"].tolist(), result["boxes"].tolist()):
-            x1, y1, x2, y2 = box
-            x1, x2 = max(0.0, min(width, x1)), max(0.0, min(width, x2))
-            y1, y2 = max(0.0, min(height, y1)), max(0.0, min(height, y2))
-            if x2 <= x1 or y2 <= y1:
-                continue
-            detections.append({
-                "label_id": label, "label": self.model.config.id2label[label],
-                "category_id": categories[label]["id"] if categories else label,
-                "score": score, "bbox_xyxy": [x1, y1, x2, y2],
-                "bbox_xywh": [x1, y1, x2 - x1, y2 - y1],
-            })
-        return {"image": str(image_path), "width": width, "height": height,
-                "detections": sorted(detections, key=lambda d: d["score"], reverse=True)}
+        with InferenceTracker(torch, device=self.device) as tracker:
+            with Image.open(image_path) as source:
+                image = source.convert("RGB")
+            width, height = image.size
+            inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+            with torch.inference_mode():
+                outputs = self.model(**inputs)
+            result = self.processor.post_process_object_detection(
+                outputs, threshold=threshold,
+                target_sizes=torch.tensor([[height, width]], device=self.device),
+            )[0]
+            categories = getattr(self.model.config, "layout_categories", None)
+            detections = []
+            for score, label, box in zip(result["scores"].tolist(), result["labels"].tolist(), result["boxes"].tolist()):
+                x1, y1, x2, y2 = box
+                x1, x2 = max(0.0, min(width, x1)), max(0.0, min(width, x2))
+                y1, y2 = max(0.0, min(height, y1)), max(0.0, min(height, y2))
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                detections.append({
+                    "label_id": label, "label": self.model.config.id2label[label],
+                    "category_id": categories[label]["id"] if categories else label,
+                    "score": score, "bbox_xyxy": [x1, y1, x2, y2],
+                    "bbox_xywh": [x1, y1, x2 - x1, y2 - y1],
+                })
+            prediction = {"image": str(image_path), "width": width, "height": height,
+                    "detections": sorted(detections, key=lambda d: d["score"], reverse=True)}
+        prediction.update(tracker.metrics)
+        return prediction
 
 
 def main(argv=None):

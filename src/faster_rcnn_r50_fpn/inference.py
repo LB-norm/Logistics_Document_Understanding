@@ -7,6 +7,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from src.utils.inference_tracking import InferenceTracker
+
 
 def format_prediction(result, categories, image_path, width, height, threshold=0.5):
     """Restore zero-based public labels and original COCO category IDs."""
@@ -67,14 +69,17 @@ class LayoutDetector:
 
         if not 0 <= threshold <= 1:
             raise ValueError("threshold must be between 0 and 1")
-        with Image.open(image_path) as source:
-            image = source.convert("RGB")
-        width, height = image.size
-        # Model preprocessing handles normalization, aspect-preserving resize,
-        # padding, class-aware NMS, and restoring boxes to the input raster.
-        with torch.inference_mode():
-            result = self.model([to_tensor(image).to(self.device)])[0]
-        return format_prediction(result, self.categories, image_path, width, height, threshold)
+        with InferenceTracker(torch, device=self.device) as tracker:
+            with Image.open(image_path) as source:
+                image = source.convert("RGB")
+            width, height = image.size
+            # Model preprocessing handles normalization, aspect-preserving resize,
+            # padding, class-aware NMS, and restoring boxes to the input raster.
+            with torch.inference_mode():
+                result = self.model([to_tensor(image).to(self.device)])[0]
+            prediction = format_prediction(result, self.categories, image_path, width, height, threshold)
+        prediction.update(tracker.metrics)
+        return prediction
 
 
 def main(argv=None):

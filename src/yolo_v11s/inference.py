@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from src.utils.inference_tracking import InferenceTracker
+
 
 class LayoutDetector:
     @classmethod
@@ -47,30 +49,35 @@ class LayoutDetector:
         self._validate_categories()
 
     def predict(self, image_path, threshold=0.5):
+        import torch
+
         if not 0 <= threshold <= 1:
             raise ValueError("threshold must be between 0 and 1")
-        with Image.open(image_path) as source:
-            image = source.convert("RGB")
-        width, height = image.size
-        # A PIL raster keeps coordinates in the stored raster's orientation.
-        result = self.model.predict(source=image, conf=threshold, imgsz=self.image_size,
-                                    iou=self.iou_threshold, max_det=self.max_detections,
-                                    device=self.device, verbose=False, augment=False)[0]
-        detections = []
-        for score, label, box in zip(result.boxes.conf.tolist(), result.boxes.cls.tolist(),
-                                     result.boxes.xyxy.tolist()):
-            label = int(label)
-            x1, y1, x2, y2 = box
-            x1, x2 = max(0.0, min(width, x1)), max(0.0, min(width, x2))
-            y1, y2 = max(0.0, min(height, y1)), max(0.0, min(height, y2))
-            if x2 <= x1 or y2 <= y1:
-                continue
-            category = self.categories[label]
-            detections.append({"label_id": label, "label": category["name"],
-                               "category_id": category["id"], "score": score,
-                               "bbox_xyxy": [x1, y1, x2, y2], "bbox_xywh": [x1, y1, x2 - x1, y2 - y1]})
-        return {"image": str(image_path), "width": width, "height": height,
-                "detections": sorted(detections, key=lambda d: d["score"], reverse=True)}
+        with InferenceTracker(torch, device=self.device) as tracker:
+            with Image.open(image_path) as source:
+                image = source.convert("RGB")
+            width, height = image.size
+            # A PIL raster keeps coordinates in the stored raster's orientation.
+            result = self.model.predict(source=image, conf=threshold, imgsz=self.image_size,
+                                        iou=self.iou_threshold, max_det=self.max_detections,
+                                        device=self.device, verbose=False, augment=False)[0]
+            detections = []
+            for score, label, box in zip(result.boxes.conf.tolist(), result.boxes.cls.tolist(),
+                                         result.boxes.xyxy.tolist()):
+                label = int(label)
+                x1, y1, x2, y2 = box
+                x1, x2 = max(0.0, min(width, x1)), max(0.0, min(width, x2))
+                y1, y2 = max(0.0, min(height, y1)), max(0.0, min(height, y2))
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                category = self.categories[label]
+                detections.append({"label_id": label, "label": category["name"],
+                                   "category_id": category["id"], "score": score,
+                                   "bbox_xyxy": [x1, y1, x2, y2], "bbox_xywh": [x1, y1, x2 - x1, y2 - y1]})
+            prediction = {"image": str(image_path), "width": width, "height": height,
+                    "detections": sorted(detections, key=lambda d: d["score"], reverse=True)}
+        prediction.update(tracker.metrics)
+        return prediction
 
 
 def main(argv=None):
