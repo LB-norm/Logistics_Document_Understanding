@@ -27,7 +27,7 @@ All configs explicitly use:
   quantization is not another varying factor in this comparison.
 - Physical train/evaluation batch size 1 and gradient accumulation 8, giving an
   effective training batch size of 8 on a single GPU.
-- Ten epochs, cosine decay, 5% warmup, weight decay `0.01`, and gradient clipping
+- Twenty epochs, cosine decay, 5% warmup, weight decay `0.01`, and gradient clipping
   norm `1.0`.
 - LoRA rank 16, alpha 32, dropout `0.05`, all matching language-side linear
   modules, and no additional `modules_to_save`, where adapters are used.

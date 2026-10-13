@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "name": "qwen35-9b-ocr-layout-fusion",
-  "description": "Fifteen text-only Qwen3.5 9B runs: Q1 NF4 QLoRA, L1/L2 BF16 LoRA, and F1/F2 full BF16 language tuning for separate, hard and soft fusion. Run each recipe across all three modes before advancing to the next recipe.",
+  "description": "Fifteen text-only Qwen3.5 9B runs, each trained for 20 epochs: Q1 NF4 QLoRA, L1/L2 BF16 LoRA, and F1/F2 full BF16 language tuning for separate, hard and soft fusion. Run each recipe across all three modes before advancing to the next recipe.",
   "experiments": [
     {
       "config": "separate/q1_nf4_qlora_r16_lr5e5.json",
