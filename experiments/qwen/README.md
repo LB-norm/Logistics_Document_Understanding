@@ -4,6 +4,12 @@ This directory stores portable, version-controlled Qwen experiment definitions.
 The training code remains in `src/Qwen`; these JSON files describe only what is
 different for a particular run.
 
+For the 15-run text-only Qwen3.5 9B comparison, use
+[`fusion/queue.json`](fusion/queue.json). It runs NF4 QLoRA, two BF16 LoRA learning
+rates and two full language learning rates on each of the separate/hard/soft OCR
+and layout representations. See the [fusion campaign](fusion/README.md) for the
+controlled settings, dataset overrides and launch commands.
+
 For short 27B NF4/INT8 capacity probes at two image resolutions, see the
 separate [memory-test queue](memory_tests/README.md).
 

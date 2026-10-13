@@ -48,6 +48,10 @@ recognition confidence, a four-point polygon, and an axis-aligned `bbox` in
 Paddle recognition order; they are stable for an identical extraction, not across
 changed models or thresholds. This order is not a semantic reading-order guarantee.
 
+To combine these outputs with YOLO detections before passing them to an LLM, use
+the [OCR/layout fusion pipeline](../fusion/README.md). It supports separate outputs,
+hard spatial assignment, and soft spatial assignment with ambiguous memberships.
+
 PIL images use RGB; arrays use BGR or grayscale. Raster pixels are not resized by
 this adapter. Paddle's detector may internally resize, and the effective detection
 parameters are recorded on each page. Returned geometry refers to the input page.
@@ -135,11 +139,24 @@ assistant message contains the final JSON target. The OCR input is generated fro
 pixels, never ground-truth labels. Full geometric evidence is kept in `.ocr.json`
 for future layout fusion rather than exposed to the text-only baseline.
 
-These records are prepared for a **text-only SFT loader**. The current project Qwen
-VLM training launcher still requires images and is not a text-only trainer. When
-connecting a downstream trainer, tokenize `messages`, supervise assistant tokens,
-and keep the schema/prompt consistent with inference. No LLM training is launched
-by this command.
+These records can be used with the [Qwen text-only training path](../Qwen/README.md#text-only-ocrlayout-training):
+
+```bash
+python src/Qwen/run_qwen_training.py --input-mode text --dataset-root data/ocr_v6_cmr
+```
+
+It tokenizes the saved `messages`, supervises assistant tokens, and preserves the
+OCR inference prompt contract. The preparation command itself does not train an LLM.
+
+To prepare the three OCR/layout fusion variants from these artifacts and saved
+YOLO predictions, use the [batch fusion SFT builder](../fusion/README.md#batch-sft-dataset-preparation):
+
+```bash
+python -m src.fusion.prepare_sft --dataset-root data/datasets/250_CMRS_240dpi_20260707
+```
+
+It defaults to OCR in `<dataset-root>/ocr_v6_cmr`; use `--ocr-dir data/ocr_v6_cmr`
+for the output location in the OCR preparation example above.
 
 Split metadata preserves every selected example, including `ok`, `empty_ocr`, and
 `ocr_error` statuses, with absolute source paths for provenance. Empty/failed OCR

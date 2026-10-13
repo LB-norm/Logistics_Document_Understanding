@@ -1,0 +1,67 @@
+{
+  "format_version": 1,
+  "name": "qwen35-9b-ocr-layout-fusion",
+  "description": "Fifteen text-only Qwen3.5 9B runs: Q1 NF4 QLoRA, L1/L2 BF16 LoRA, and F1/F2 full BF16 language tuning for separate, hard and soft fusion. Run each recipe across all three modes before advancing to the next recipe.",
+  "experiments": [
+    {
+      "config": "separate/q1_nf4_qlora_r16_lr5e5.json",
+      "enabled": true
+    },
+    {
+      "config": "hard/q1_nf4_qlora_r16_lr5e5.json",
+      "enabled": true
+    },
+    {
+      "config": "soft/q1_nf4_qlora_r16_lr5e5.json",
+      "enabled": true
+    },
+    {
+      "config": "separate/l1_bf16_lora_r16_lr5e5.json",
+      "enabled": true
+    },
+    {
+      "config": "hard/l1_bf16_lora_r16_lr5e5.json",
+      "enabled": true
+    },
+    {
+      "config": "soft/l1_bf16_lora_r16_lr5e5.json",
+      "enabled": true
+    },
+    {
+      "config": "separate/l2_bf16_lora_r16_lr1e5.json",
+      "enabled": true
+    },
+    {
+      "config": "hard/l2_bf16_lora_r16_lr1e5.json",
+      "enabled": true
+    },
+    {
+      "config": "soft/l2_bf16_lora_r16_lr1e5.json",
+      "enabled": true
+    },
+    {
+      "config": "separate/f1_bf16_full_text_lr1e6.json",
+      "enabled": true
+    },
+    {
+      "config": "hard/f1_bf16_full_text_lr1e6.json",
+      "enabled": true
+    },
+    {
+      "config": "soft/f1_bf16_full_text_lr1e6.json",
+      "enabled": true
+    },
+    {
+      "config": "separate/f2_bf16_full_text_lr5e6.json",
+      "enabled": true
+    },
+    {
+      "config": "hard/f2_bf16_full_text_lr5e6.json",
+      "enabled": true
+    },
+    {
+      "config": "soft/f2_bf16_full_text_lr5e6.json",
+      "enabled": true
+    }
+  ]
+}

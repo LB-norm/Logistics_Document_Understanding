@@ -7,9 +7,11 @@ documents. The current dataset and schema cover CMR documents and German deliver
 
 | Pipeline | Use | Documentation |
 | --- | --- | --- |
+| Unified inference | End-to-end Qwen/Donut or OCR → YOLO → fusion → Qwen, with per-image measurements | [Inference pipeline](src/inference_pipeline/README.md) |
 | Donut | Full fine-tuning of the Donut vision encoder-decoder model | [Donut](src/Donut/README.md) |
-| Qwen | LoRA/QLoRA fine-tuning of Qwen vision-language models | [Qwen](src/Qwen/README.md) |
+| Qwen | Adapter/full fine-tuning from images or OCR/layout text conversations | [Qwen](src/Qwen/README.md) |
 | PP-OCRv6 | Reusable OCR with coordinates and train/val OCR dataset preparation | [OCR baseline](src/PP_parser/README.md) |
+| OCR/layout fusion | Separate, hard, or soft geometric representations and batch text-only SFT preparation | [Fusion](src/fusion/README.md) |
 | PaddleOCR-VL | Inference and ERNIEKit data preparation | [PaddleOCR-VL](src/PP_parser/README.md) |
 | Conditional DETR | COCO document region detection and fine-tuning | [Conditional DETR](src/conditional_detr/README.md) |
 | YOLO11s | COCO document region detection with matching prediction/review output | [YOLO11s](src/yolo_v11s/README.md) |
@@ -41,6 +43,7 @@ allocator peak counters are shared by the process.
 
 | Pipeline | Metrics location |
 | --- | --- |
+| Unified end-to-end/parser pipeline | `inference_manifest.jsonl` in the chosen output directory, with total/stage time, sampled process VRAM and native framework peaks |
 | Qwen image or OCR-text inference | `inference_manifest.jsonl`, or `<prediction>.json.diagnostics.json` for one input |
 | YOLO / Conditional DETR / Faster R-CNN | Each image prediction in the output JSON, including layout validation previews |
 | Donut | Top level of the inference result JSON |

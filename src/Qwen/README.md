@@ -1,6 +1,7 @@
 # Qwen QLoRA training
 
-This pipeline fine-tunes Qwen vision-language models for CMR and delivery-note extraction.
+This pipeline fine-tunes Qwen models for CMR and delivery-note extraction using
+document images or text-only OCR/layout conversations.
 The default run uses `Qwen/Qwen3.5-2B`; its VRAM requirement depends strongly on the
 selected resolution and document sequence lengths.
 
@@ -116,6 +117,13 @@ Each project example contains the document image, a system instruction, an extra
 prompt, and the annotation's `content` object as the assistant answer. Loss is calculated
 only on the assistant tokens. The prompt, padding, and image tokens are masked.
 
+With `--input-mode text`, each example instead contains the saved system/user
+conversation (including fused OCR/layout evidence) and the ground-truth assistant
+JSON. It uses the same teacher-forced next-token cross-entropy over the assistant
+answer, including its end token. Prompt and padding labels are masked; prompt
+tokens still condition the predictions. Images are neither opened nor passed to
+the model in training, teacher-forced evaluation, or validation generation.
+
 With the default `--text-tuning lora --vision-tuning frozen
 --vision-merger-tuning frozen` modes, the Qwen base weights and all visual
 components remain unchanged. LoRA matrices are trained in language-model linear
@@ -124,6 +132,75 @@ layers. The saved adapter therefore needs the original base model at inference.
 The JSON Schema is used for validation reports; it is not used to constrain decoding. The
 model learns the key names, nesting, null handling, and field placement from the training
 answers.
+
+## Text-only OCR/layout training
+
+The ready-to-run [9B fusion campaign](../../experiments/qwen/fusion/README.md)
+provides five training configurations per mode and a 15-run sequential queue.
+
+Prepare the inputs with the [batch fusion SFT builder](../fusion/README.md#batch-sft-dataset-preparation).
+Then select one representation's directory. All three modes use the same training
+path and the existing train/validation membership:
+
+```bash
+# Validate the prepared conversations without loading model dependencies:
+python src/Qwen/run_qwen_training.py \
+  --input-mode text \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707/fusion_sft/soft \
+  --dry-run
+
+# Also check actual token lengths using the model's tokenizer and configuration:
+python src/Qwen/run_qwen_training.py \
+  --input-mode text \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707/fusion_sft/soft \
+  --dry-run --check-text-lengths
+
+# Train with the standard QLoRA defaults:
+python src/Qwen/run_qwen_training.py \
+  --input-mode text \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707/fusion_sft/soft \
+  --schema-path data/datasets/250_CMRS_240dpi_20260707/fusion_sft/schema.json \
+  --run-name qwen35-2b-fusion-soft
+```
+
+Replace `soft` with `separate` or `hard` and use a distinct run name for each
+experiment. Pointing at `ocr_v6_cmr` instead supports the existing plain-OCR
+baseline. Explicit `--train-file`/`--validation-file` values can also select files
+such as `soft/train.jsonl` and `soft/val.jsonl` relative to a shared dataset root.
+Without `--validation-file`, JSONL datasets try `validation.jsonl`, then `val.jsonl`.
+
+Text JSONL records need a nonempty `messages` conversation ending in an assistant
+JSON answer; plain-string content and typed text blocks are accepted. No image
+input fields or image placeholders may be supplied. Image paths under `provenance`
+are permitted and are not resolved. The loader preserves the supplied prompts
+rather than rebuilding them with the image extraction prompt. Optional `target`
+objects must match the assistant answers, supplied sample IDs must be unique across splits,
+and fusion modes must agree across training and validation.
+
+Normal text training automatically tokenizes every selected complete conversation
+**before loading model weights**. It verifies that the inference generation prompt
+is an exact token prefix of the training conversation, caches the token IDs, and
+checks lengths against the smallest available limit from the language model
+configuration, tokenizer, and optional `--max-length`. Oversized examples raise
+an error; text training never truncates input evidence or the answer. The model's
+chat template supplies the assistant framing and end tokens; special tokens are
+not added a second time. `--check-text-lengths` performs the same preflight during
+a dry run and may download tokenizer/processor/config files, without model weights.
+Use `--local-files-only` when these files are already cached.
+
+Text runs write `text_sequence_lengths.json` with actual per-example prompt,
+assistant and complete-conversation token counts, plus split summaries and the
+effective context limit. Validation previews generate from the saved input alone,
+with their generation budget capped by remaining context space. Choose
+`--schema-path` matching the prepared target when using a custom contract.
+
+`--input-mode image` remains the default. Text mode uses the same Qwen3.5
+multimodal checkpoint loader and still loads its vision weights, which stay
+frozen. `--vision-tuning` and `--vision-merger-tuning` must both be `frozen`;
+`--resolution` has no effect on text tokenization. Language LoRA/QLoRA, full
+language tuning, checkpoint selection/resume, experiment JSON files/queues and
+best/last exports continue through the existing training machinery. Experiment
+files can select text training with `"input_mode": "text"`.
 
 ## Tuning modes
 
@@ -256,6 +333,10 @@ Resume an interrupted run with the same output directory:
 
 ## Inference
 
+The [unified inference entry point](../inference_pipeline/README.md) selects base
+models or fine-tuned checkpoints for end-to-end inference and also runs
+OCR → YOLO → fusion → text-only Qwen generation. It reuses this module's defaults.
+
 Run one image with a saved adapter. The adapter metadata selects the matching base
 model automatically, and the saved adapter processor is reused when available:
 
@@ -354,7 +435,7 @@ when the annotation wrapper should be part of the answer.
 
 ### Conversational JSONL
 
-The alternative layout contains `train.jsonl`, `validation.jsonl`, and referenced images.
+The alternative image layout contains `train.jsonl`, `validation.jsonl` (or `val.jsonl`), and referenced images.
 Each row needs an image path and a chat conversation ending in the target assistant answer:
 
 ```json
@@ -386,5 +467,6 @@ examples and include one image block per image. The final message must have role
 ## References
 
 - [Qwen3.5-2B model card](https://huggingface.co/Qwen/Qwen3.5-2B)
+- [Qwen3.5 chat template](https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/chat_template.jinja)
 - [Transformers Qwen3.5 documentation](https://huggingface.co/docs/transformers/model_doc/qwen3_5)
 - [TRL vision-language SFT guide](https://huggingface.co/docs/trl/main/en/training_vlm_sft)

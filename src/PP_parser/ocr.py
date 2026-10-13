@@ -103,6 +103,11 @@ class OCRExtractor:
         self._package_versions: dict[str, str] = {}
         self._injected_pipeline = pipeline is not None
 
+    def load(self) -> "OCRExtractor":
+        """Initialize weights before timing a batch of inference calls."""
+        self._get_pipeline()
+        return self
+
     def _get_pipeline(self) -> Any:
         if self._pipeline is None:
             try:

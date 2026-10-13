@@ -145,6 +145,7 @@ class QwenTrainingLauncherTests(unittest.TestCase):
         self.assertFalse(training_args.values["save_only_model"])
         self.assertEqual(training_args.values["lr_scheduler_type"], "cosine")
         self.assertEqual(training_args.values["warmup_steps"], 0.05)
+        self.assertEqual(training_args.values["max_grad_norm"], 1.0)
         self.assertNotIn("warmup_ratio", training_args.values)
         self.assertTrue(training_args.values["load_best_model_at_end"])
         self.assertEqual(training_args.values["metric_for_best_model"], "eval_loss")
@@ -155,6 +156,19 @@ class QwenTrainingLauncherTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "best and last"):
             validate_training_options(args)
+
+    def test_gradient_clipping_is_configurable_and_validated(self) -> None:
+        args = parse_args(["--max-grad-norm", "0.5"])
+        validate_training_options(args)
+        arguments = build_training_arguments(
+            SimpleNamespace, args, output_dir=Path("output"), gradient_checkpointing=True,
+            bf16=True, fp16=False, load_in_4bit=True,
+        )
+        self.assertEqual(arguments.max_grad_norm, 0.5)
+        validate_training_options(parse_args(["--max-grad-norm", "0"]))
+        for value in ("-1", "nan", "inf"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "max-grad-norm"):
+                validate_training_options(parse_args(["--max-grad-norm", value]))
 
     def test_model_only_checkpoint_policy_accepts_best_only_retention(self) -> None:
         args = parse_args(["--save-only-model", "--save-total-limit", "1"])

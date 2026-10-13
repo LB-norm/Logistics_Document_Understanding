@@ -4,8 +4,9 @@ import argparse
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -40,7 +41,15 @@ DEFAULT_TASK_PROMPT = "<s_cord-v2>"
 PRESERVE_TEMPLATE_KEYS = {"document_type", "document_language"}
 
 
-def parse_args() -> argparse.Namespace:
+@dataclass
+class InferenceRuntime:
+    torch: Any
+    image_module: Any
+    processor: Any
+    model: Any
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run CPU-based Donut inference on the sample Lieferschein image and "
@@ -130,7 +139,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Load model files only from the local Hugging Face cache.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def load_json(path: Path) -> Any:
@@ -292,25 +301,7 @@ def detect_prompt_warning(task_prompt: str, processor: Any) -> str | None:
     )
 
 
-def main() -> int:
-    args = parse_args()
-
-    if not args.image_path.exists():
-        print(f"Input image not found: {args.image_path}", file=sys.stderr)
-        return 1
-
-    if not args.schema_path.exists():
-        print(f"Schema file not found: {args.schema_path}", file=sys.stderr)
-        return 1
-
-    if not args.example_path.exists():
-        print(f"Example file not found: {args.example_path}", file=sys.stderr)
-        return 1
-
-    template = extract_json_target(load_json(args.example_path), args.annotation_target_key)
-    schema = load_json(args.schema_path)
-    target_schema = select_schema_node_for_target(schema, args.annotation_target_key)
-
+def load_inference_runtime(args: argparse.Namespace) -> InferenceRuntime:
     torch, image_module, DonutProcessor, VisionEncoderDecoderModel = (
         load_runtime_dependencies()
     )
@@ -322,9 +313,20 @@ def main() -> int:
     )
     model.to(args.device)
     model.eval()
+    return InferenceRuntime(torch, image_module, processor, model)
+
+
+def generate_image_prediction(
+    runtime: InferenceRuntime, image_path: Path, template: Any,
+    schema: Any, args: argparse.Namespace,
+) -> dict[str, Any]:
+    torch, image_module, processor, model = (
+        runtime.torch, runtime.image_module, runtime.processor, runtime.model
+    )
+    target_schema = select_schema_node_for_target(schema, args.annotation_target_key)
 
     with InferenceTracker(torch, device=args.device) as tracker:
-        image = load_image(args.image_path, image_module)
+        image = load_image(image_path, image_module)
         pixel_values = processor(image, return_tensors="pt").pixel_values.to(args.device)
 
         decoder_input_ids = processor.tokenizer(
@@ -383,7 +385,7 @@ def main() -> int:
             "task_prompt": args.task_prompt,
         },
         "input": {
-            "image_path": str(args.image_path),
+            "image_path": str(image_path),
             "schema_path": str(args.schema_path),
             "example_path": str(args.example_path),
             "annotation_target_key": args.annotation_target_key,
@@ -400,6 +402,20 @@ def main() -> int:
             "guided_prediction": guided_prediction,
         },
     }
+    return result
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    for path, label in ((args.image_path, "Input image"), (args.schema_path, "Schema file"),
+                        (args.example_path, "Example file")):
+        if not path.is_file():
+            print(f"{label} not found: {path}", file=sys.stderr)
+            return 1
+    template = extract_json_target(load_json(args.example_path), args.annotation_target_key)
+    schema = load_json(args.schema_path)
+    runtime = load_inference_runtime(args)
+    result = generate_image_prediction(runtime, args.image_path, template, schema, args)
 
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
     with args.output_path.open("w", encoding="utf-8") as handle:

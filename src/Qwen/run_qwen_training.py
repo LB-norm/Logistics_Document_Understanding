@@ -28,6 +28,7 @@ from src.Qwen.qwen_finetune_logic import main as run_training
 
 DEFAULT_TRAINING_CONFIG: dict[str, Any] = {
     "dataset_root": REPO_ROOT / "data" / "datasets" / "250_CMRS_240dpi_20260707",
+    "input_mode": "image",
     "model_id": "Qwen/Qwen3.5-2B",
     "model_class": "auto",
     "local_files_only": False,
@@ -49,6 +50,7 @@ DEFAULT_TRAINING_CONFIG: dict[str, Any] = {
     "num_train_epochs": 10.0,
     "learning_rate": 5e-5,
     "weight_decay": 0.01,
+    "max_grad_norm": 1.0,
     "lr_scheduler_type": "cosine",
     "warmup_ratio": 0.05,
     "lora_r": 16,

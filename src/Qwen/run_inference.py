@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.Qwen.prompts import DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT, build_ocr_messages
+from src.Qwen.prompts import DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT, build_fusion_messages, build_ocr_messages
 from src.eval_suite.schema import validate_json_schema
 from src.utils.inference_tracking import InferenceTracker
 from src.utils.image_resolution import (
@@ -650,6 +650,8 @@ def generate_image_prediction(
     template: Any,
     target_schema: Any,
     args: argparse.Namespace,
+    *,
+    fusion_document: dict[str, Any] | None = None,
 ) -> ImageInferenceResult:
     device_map = getattr(runtime.model, "hf_device_map", {}) or {}
     uses_cuda_map = any(
@@ -658,8 +660,12 @@ def generate_image_prediction(
     )
     inference_device = None if uses_cuda_map else get_model_device(runtime.model)
     with InferenceTracker(runtime.torch, device=inference_device) as tracker:
-        text_only = bool(args.ocr_text_paths)
-        if text_only:
+        text_only = fusion_document is not None or bool(args.ocr_text_paths)
+        if fusion_document is not None:
+            messages = build_fusion_messages(
+                args.system_prompt, args.user_prompt, fusion_document, template, target_schema,
+            )
+        elif text_only:
             messages = build_ocr_messages(
                 args.system_prompt, args.user_prompt,
                 image_path.read_text(encoding="utf-8"), template, target_schema,

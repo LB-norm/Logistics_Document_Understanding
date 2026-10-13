@@ -123,6 +123,8 @@ prediction = detector.predict("data/example.jpg", threshold=0.5)
 ```
 
 The model loads once and selects CUDA when available. `--device cpu` forces CPU.
+The [OCR/layout fusion pipeline](../fusion/README.md) combines these predictions
+with PP-OCR outputs in separate, hard-assignment, or soft-assignment modes for LLM input.
 The output matches DETR's JSON list: each image has its path, width, height, and
 detections with `label_id`, `label`, original COCO `category_id`, `score`, and pixel
 `bbox_xyxy`/`bbox_xywh`, clipped to image bounds and sorted by confidence. YOLO

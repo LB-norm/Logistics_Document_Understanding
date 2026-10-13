@@ -1,4 +1,4 @@
-"""Reusable Qwen vision-language adapter and full fine-tuning logic.
+"""Reusable Qwen image or text-only adapter and full fine-tuning logic.
 
 The user-facing defaults live in :mod:`src.Qwen.run_qwen_training`.  Keeping
 this module free of project-machine defaults makes the training path reusable
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
 import os
 import random
 import re
@@ -86,14 +87,20 @@ def parse_args(
         ),
     )
     parser.add_argument(
+        "--input-mode",
+        choices=["image", "text"],
+        default="image",
+        help="image: existing VLM training; text: conversations such as fused OCR/layout evidence, without pixels.",
+    )
+    parser.add_argument(
         "--train-file",
         default="train.jsonl",
         help="Training JSONL file name relative to --dataset-root for Qwen JSONL datasets.",
     )
     parser.add_argument(
         "--validation-file",
-        default="validation.jsonl",
-        help="Validation JSONL file name relative to --dataset-root for Qwen JSONL datasets.",
+        default=None,
+        help="Validation JSONL relative to --dataset-root. If omitted, tries validation.jsonl, then val.jsonl.",
     )
     parser.add_argument("--train-split", default="train", help="Training split directory name for project datasets.")
     parser.add_argument(
@@ -173,8 +180,8 @@ def parse_args(
         type=int,
         default=None,
         help=(
-            "Optional sequence truncation length. Leave unset to avoid truncating image tokens. "
-            "This is the recommended default for VLM SFT."
+            "Optional maximum sequence length. Text training rejects longer complete conversations "
+            "without truncation. Image training retains its existing truncation behavior."
         ),
     )
     parser.add_argument("--num-train-epochs", type=float, default=10.0, help="Training epochs.")
@@ -185,6 +192,7 @@ def parse_args(
         help="Maximum learning rate reached after warmup.",
     )
     parser.add_argument("--weight-decay", type=float, default=0.01, help="AdamW weight decay.")
+    parser.add_argument("--max-grad-norm", type=float, default=1.0, help="Maximum gradient norm for clipping; 0 disables clipping.")
     parser.add_argument(
         "--lr-scheduler-type",
         default="cosine",
@@ -433,6 +441,11 @@ def parse_args(
         help="Optional cap for quick debugging on a subset of the validation examples.",
     )
     parser.add_argument(
+        "--check-text-lengths",
+        action="store_true",
+        help="With --input-mode text --dry-run, load the tokenizer/config and check actual token lengths without model weights.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Parse and validate the dataset, print a summary, then exit before loading model dependencies.",
@@ -466,6 +479,7 @@ def load_runtime_dependencies(
     load_in_8bit: bool = False,
     use_peft: bool = True,
     require_bitsandbytes: bool = False,
+    require_images: bool = True,
 ) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any, Any]:
     missing: list[str] = []
 
@@ -475,11 +489,12 @@ def load_runtime_dependencies(
         missing.append("torch")
         torch = None
 
-    try:
-        from PIL import Image
-    except ImportError:
-        missing.append("Pillow")
-        Image = None
+    Image = None
+    if require_images:
+        try:
+            from PIL import Image
+        except ImportError:
+            missing.append("Pillow")
 
     try:
         from datasets import Dataset
@@ -734,18 +749,34 @@ def normalize_messages(messages: Any, image_count: int) -> list[dict[str, Any]]:
     return normalized
 
 
-def build_example_record(raw_record: dict[str, Any], dataset_root: Path) -> dict[str, Any]:
-    image_paths = resolve_image_paths(raw_record, dataset_root)
+def build_example_record(
+    raw_record: dict[str, Any], dataset_root: Path, input_mode: str = "image",
+) -> dict[str, Any]:
+    if input_mode == "text":
+        if any(raw_record.get(key) for key in ("image", "image_path", "images", "image_paths")):
+            raise ValueError("Text-only training records must not supply image inputs; provenance links are allowed.")
+        image_paths = []
+    else:
+        image_paths = resolve_image_paths(raw_record, dataset_root)
     messages = normalize_messages(raw_record.get("messages"), image_count=len(image_paths))
-    return {
+    example = {
         "id": raw_record.get("id"),
         "messages": messages,
         "image_paths": image_paths,
     }
+    if input_mode == "text":
+        if not any(m["role"] == "user" for m in messages):
+            raise ValueError("Text-only training requires a user message before the assistant answer.")
+        target = extract_assistant_target(example)
+        if "target" in raw_record and raw_record["target"] != target:
+            raise ValueError(f"Example {example['id']!r}: target differs from the assistant answer.")
+        if "fusion_mode" in raw_record:
+            example["fusion_mode"] = raw_record["fusion_mode"]
+    return example
 
 
-def load_split(dataset_file: Path, dataset_root: Path) -> list[dict[str, Any]]:
-    return [build_example_record(record, dataset_root) for record in read_jsonl(dataset_file)]
+def load_split(dataset_file: Path, dataset_root: Path, input_mode: str = "image") -> list[dict[str, Any]]:
+    return [build_example_record(record, dataset_root, input_mode) for record in read_jsonl(dataset_file)]
 
 
 def build_project_messages(gt_parse: Any, args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -843,7 +874,7 @@ def load_dataset_splits(
         raise FileNotFoundError(f"Dataset directory not found: {dataset_root}")
 
     train_split_dir = dataset_root / args.train_split
-    if (train_split_dir / "metadata.jsonl").exists():
+    if (train_split_dir / "metadata.jsonl").exists() and args.input_mode == "image":
         validation_split = choose_validation_split(dataset_root, args.validation_split)
         if validation_split is None:
             raise FileNotFoundError(
@@ -857,11 +888,16 @@ def load_dataset_splits(
         train_source = args.train_split
         validation_source = validation_split
     else:
+        if args.input_mode == "text" and not (dataset_root / args.train_file).is_file():
+            raise ValueError("Text training requires conversational JSONL; point --dataset-root at fusion_sft/<mode> or ocr_v6_cmr, or set --train-file.")
         train_file = resolve_dataset_file(dataset_root, args.train_file)
-        validation_file = resolve_dataset_file(dataset_root, args.validation_file)
-        train_examples = load_split(train_file, dataset_root)
-        validation_examples = load_split(validation_file, dataset_root)
-        source_layout = "qwen_jsonl"
+        validation_name = args.validation_file
+        if validation_name is None:
+            validation_name = "validation.jsonl" if (dataset_root / "validation.jsonl").is_file() else "val.jsonl"
+        validation_file = resolve_dataset_file(dataset_root, validation_name)
+        train_examples = load_split(train_file, dataset_root, args.input_mode)
+        validation_examples = load_split(validation_file, dataset_root, args.input_mode)
+        source_layout = "text_jsonl" if args.input_mode == "text" else "qwen_jsonl"
         train_source = str(train_file)
         validation_source = str(validation_file)
 
@@ -872,6 +908,13 @@ def load_dataset_splits(
         raise ValueError("Training split did not contain any examples.")
     if not validation_examples:
         raise ValueError("Validation split did not contain any examples.")
+    if args.input_mode == "text":
+        identifiers = [e["id"] for e in [*train_examples, *validation_examples] if e["id"] is not None]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Text training sample IDs must be unique across train and validation.")
+        fusion_modes = {e.get("fusion_mode") for e in [*train_examples, *validation_examples]}
+        if len(fusion_modes) > 1:
+            raise ValueError("Train and validation must use the same fusion mode; run each strategy separately.")
 
     return train_examples, validation_examples, str(dataset_root), train_source, validation_source, source_layout
 
@@ -907,6 +950,7 @@ def print_dry_run_summary(
     print("Qwen training dry run")
     print(f"  dataset_root: {resolved_dataset_root}")
     print(f"  source_layout: {source_layout}")
+    print(f"  input_mode: {args.input_mode}")
     print(f"  train_source: {train_source} ({len(train_examples)} examples)")
     print(f"  validation_source: {validation_source} ({len(validation_examples)} examples)")
     print(f"  annotation_target_key: {args.annotation_target_key}")
@@ -931,6 +975,103 @@ def apply_chat_template_safely(processor: Any, messages: list[dict[str, Any]], a
             tokenize=False,
             add_generation_prompt=add_generation_prompt,
         )
+
+
+def encode_text_example(processor: Any, example: dict[str, Any]) -> dict[str, Any]:
+    """Tokenize the complete chat once, retaining the exact generation boundary."""
+    if example.get("image_paths") or count_image_placeholders(example["messages"]):
+        raise ValueError("Text-only tokenization cannot include image inputs.")
+    full_text = apply_chat_template_safely(processor, example["messages"], False)
+    prompt_text = apply_chat_template_safely(processor, example["messages"][:-1], True)
+    kwargs = {"add_special_tokens": False, "padding": False, "truncation": False}
+    full_ids = list(processor.tokenizer(full_text, **kwargs)["input_ids"])
+    prompt_ids = list(processor.tokenizer(prompt_text, **kwargs)["input_ids"])
+    if not prompt_ids or full_ids[:len(prompt_ids)] != prompt_ids:
+        raise ValueError(
+            f"Example {example.get('id')!r}: the generation prompt is not an exact token prefix "
+            "of the complete conversation; cannot safely mask the assistant boundary."
+        )
+    if len(full_ids) <= len(prompt_ids):
+        raise ValueError(f"Example {example.get('id')!r}: no assistant tokens remain for training.")
+    return {"id": example.get("id"), "input_ids": full_ids,
+            "attention_mask": [1] * len(full_ids), "prompt_length": len(prompt_ids)}
+
+
+def text_context_limits(processor: Any, model_config: Any, max_length: int | None) -> dict[str, int]:
+    """Ignore tokenizer sentinel values, and use the language context configuration."""
+    def value(config: Any, name: str) -> Any:
+        return config.get(name) if isinstance(config, dict) else getattr(config, name, None)
+
+    text_config = value(model_config, "text_config")
+    candidates = {
+        "model_context": value(text_config if text_config is not None else model_config,
+                               "max_position_embeddings"),
+        "tokenizer_context": getattr(processor.tokenizer, "model_max_length", None),
+        "max_length": max_length,
+    }
+    limits = {key: number for key, number in candidates.items()
+              if isinstance(number, int) and not isinstance(number, bool) and 0 < number < 1_000_000_000}
+    if not limits:
+        raise ValueError("Could not determine the text context limit; supply --max-length explicitly.")
+    return limits
+
+
+def prepare_text_training_data(
+    processor: Any,
+    model_config: Any,
+    train_examples: list[dict[str, Any]],
+    validation_examples: list[dict[str, Any]],
+    max_length: int | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Preflight full prompt/answer lengths and cache token IDs before loading weights."""
+    limits = text_context_limits(processor, model_config, max_length)
+    limit = min(limits.values())
+    encoded_splits = []
+    summary: dict[str, Any] = {"context_limits": limits, "effective_max_length": limit,
+                               "truncated": False, "splits": {}}
+    for split, examples in (("train", train_examples), ("validation", validation_examples)):
+        records, lengths = [], []
+        for example in examples:
+            record = encode_text_example(processor, example)
+            total = len(record["input_ids"])
+            if total > limit:
+                raise ValueError(
+                    f"{split} example {example.get('id')!r} needs {total} tokens including the complete "
+                    f"assistant answer, exceeding the {limit}-token limit. No truncation was performed."
+                )
+            example["text_context_limit"] = limit
+            records.append(record)
+            lengths.append({"id": example.get("id"), "conversation_tokens": total,
+                            "prompt_tokens": record["prompt_length"],
+                            "assistant_tokens": total - record["prompt_length"]})
+        totals = [item["conversation_tokens"] for item in lengths]
+        summary["splits"][split] = {"examples": len(records), "min_tokens": min(totals),
+                                    "mean_tokens": round(sum(totals) / len(totals), 2),
+                                    "max_tokens": max(totals), "samples": lengths}
+        encoded_splits.append(records)
+    return encoded_splits[0], encoded_splits[1], summary
+
+
+@dataclass
+class QwenTextDataCollator:
+    tokenizer: Any
+    ignore_index: int = -100
+
+    def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
+        batch = self.tokenizer.pad(
+            [{"input_ids": f["input_ids"], "attention_mask": f["attention_mask"]} for f in features],
+            padding=True, return_tensors="pt",
+        )
+        labels = batch["input_ids"].clone()
+        labels[batch["attention_mask"] == 0] = self.ignore_index
+        for index, feature in enumerate(features):
+            length, prompt_length = len(feature["input_ids"]), feature["prompt_length"]
+            if not 0 < prompt_length < length:
+                raise ValueError("Text examples must have a nonempty prompt and assistant answer.")
+            offset = labels.shape[1] - length if self.tokenizer.padding_side == "left" else 0
+            labels[index, offset:offset + prompt_length] = self.ignore_index
+        batch["labels"] = labels
+        return batch
 
 
 @dataclass
@@ -1139,13 +1280,12 @@ def generate_validation_preview_sample(
         example["messages"][:-1],
         add_generation_prompt=True,
     )
-    processor_images: list[Any] = [images[0]] if len(images) == 1 else [images]
-    inputs = processor(
-        text=[prompt],
-        images=processor_images,
-        padding=True,
-        return_tensors="pt",
-    )
+    if images:
+        processor_images: list[Any] = [images[0]] if len(images) == 1 else [images]
+        inputs = processor(text=[prompt], images=processor_images, padding=True, return_tensors="pt")
+    else:
+        inputs = processor.tokenizer([prompt], padding=True, return_tensors="pt",
+                                     add_special_tokens=False, truncation=False)
     inputs = _move_batch_to_device(inputs, _model_input_device(model))
     prompt_tokens = int(inputs["input_ids"].shape[-1])
 
@@ -1155,6 +1295,11 @@ def generate_validation_preview_sample(
         "num_beams": 1,
         "use_cache": True,
     }
+    if not images and example.get("text_context_limit") is not None:
+        remaining = example["text_context_limit"] - prompt_tokens
+        if remaining < 1:
+            raise ValueError("Validation prompt leaves no context space for generation.")
+        generation_kwargs["max_new_tokens"] = min(max_new_tokens, remaining)
     if processor.tokenizer.pad_token_id is not None:
         generation_kwargs["pad_token_id"] = processor.tokenizer.pad_token_id
     if processor.tokenizer.eos_token_id is not None:
@@ -1195,6 +1340,7 @@ def generate_validation_preview_sample(
     return {
         "id": example.get("id"),
         "image_paths": example["image_paths"],
+        "input_mode": "image" if images else "text",
         "annotation_path": example.get("annotation_path"),
         "ground_truth": ground_truth,
         "prediction": prediction,
@@ -1218,7 +1364,7 @@ def render_validation_preview_html(payload: dict[str, Any]) -> str:
         image_links = " &middot; ".join(
             f'<a href="{html.escape(Path(path).resolve().as_uri(), quote=True)}">Open image {index}</a>'
             for index, path in enumerate(sample["image_paths"], start=1)
-        )
+        ) or "Text-only input"
         exact_match = "yes" if sample["exact_match"] else "no"
         parse_error = sample.get("parse_error") or "none"
         schema_errors = sample.get("schema_errors") or []
@@ -1475,6 +1621,15 @@ def parse_vision_module_names(raw_value: str) -> list[str]:
 
 
 def validate_training_options(args: argparse.Namespace) -> None:
+    if args.input_mode not in {"image", "text"}:
+        raise ValueError("--input-mode must be image or text.")
+    if args.check_text_lengths and args.input_mode != "text":
+        raise ValueError("--check-text-lengths requires --input-mode text.")
+    if args.input_mode == "text":
+        if args.vision_tuning != "frozen" or args.vision_merger_tuning != "frozen":
+            raise ValueError("Text-only training requires frozen vision blocks and vision merger.")
+        if args.text_tuning not in {"lora", "full"}:
+            raise ValueError("Text-only training requires --text-tuning lora or full.")
     if args.load_in_4bit and args.load_in_8bit:
         raise ValueError("4-bit and 8-bit loading cannot both be enabled.")
     if args.lora_r < 1:
@@ -1485,6 +1640,8 @@ def validate_training_options(args: argparse.Namespace) -> None:
         raise ValueError("--lora-dropout must be in the range [0, 1).")
     if not 0.0 <= args.warmup_ratio < 1.0:
         raise ValueError("--warmup-ratio must be in the range [0, 1).")
+    if not math.isfinite(args.max_grad_norm) or args.max_grad_norm < 0:
+        raise ValueError("--max-grad-norm must be finite and nonnegative.")
     max_pixels_for_resolution(args.resolution)
     if args.max_length is not None and args.max_length < 1:
         raise ValueError("--max-length must be positive when supplied.")
@@ -1944,8 +2101,26 @@ def build_processor_load_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"local_files_only": args.local_files_only}
     if args.cache_dir is not None:
         kwargs["cache_dir"] = str(args.cache_dir)
-    kwargs["max_pixels"] = max_pixels_for_resolution(args.resolution)
+    if args.input_mode == "image":
+        kwargs["max_pixels"] = max_pixels_for_resolution(args.resolution)
     return kwargs
+
+
+def load_text_tokenization_resources(args: argparse.Namespace) -> tuple[Any, Any]:
+    """Load tokenizer/chat template and model configuration, without model weights."""
+    from transformers import AutoConfig, AutoProcessor
+
+    kwargs = build_processor_load_kwargs(args)
+    processor = AutoProcessor.from_pretrained(args.model_id, **kwargs)
+    config = AutoConfig.from_pretrained(args.model_id, **kwargs)
+    return processor, config
+
+
+def print_text_length_summary(summary: dict[str, Any]) -> None:
+    print(f"  effective_text_max_length: {summary['effective_max_length']}")
+    for split, stats in summary["splits"].items():
+        print(f"  {split}_conversation_tokens: min={stats['min_tokens']}, "
+              f"mean={stats['mean_tokens']}, max={stats['max_tokens']}")
 
 
 def build_training_arguments(
@@ -1964,6 +2139,7 @@ def build_training_arguments(
         num_train_epochs=args.num_train_epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
+        max_grad_norm=args.max_grad_norm,
         lr_scheduler_type=args.lr_scheduler_type,
         # Transformers 5.4 removed the deprecated ``warmup_ratio`` argument.
         # ``warmup_steps`` accepts a float in [0, 1) with the same ratio
@@ -2153,6 +2329,14 @@ def main(
     for preview_example in validation_preview_examples:
         extract_assistant_target(preview_example)
 
+    text_processor = None
+    text_train_data = text_validation_data = text_length_summary = None
+    if args.input_mode == "text" and (not args.dry_run or args.check_text_lengths):
+        text_processor, model_config = load_text_tokenization_resources(args)
+        text_train_data, text_validation_data, text_length_summary = prepare_text_training_data(
+            text_processor, model_config, train_examples, validation_examples, args.max_length,
+        )
+
     if args.dry_run:
         print_dry_run_summary(
             train_examples=train_examples,
@@ -2164,10 +2348,13 @@ def main(
             args=args,
         )
         print(f"  model_id: {args.model_id}")
-        print(
-            f"  resolution: {args.resolution} "
-            f"({max_pixels_for_resolution(args.resolution):,} max pixels)"
-        )
+        if args.input_mode == "image":
+            print(f"  resolution: {args.resolution} ({max_pixels_for_resolution(args.resolution):,} max pixels)")
+        else:
+            if text_length_summary is not None:
+                print_text_length_summary(text_length_summary)
+            else:
+                print("  token_lengths: not checked; add --check-text-lengths to load the tokenizer/config")
         print(f"  load_in_4bit: {args.load_in_4bit}")
         print(f"  load_in_8bit: {args.load_in_8bit}")
         print(f"  text_tuning: {args.text_tuning}")
@@ -2206,6 +2393,9 @@ def main(
     )
     args.output_dir = run_context.output_dir
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if text_length_summary is not None:
+        write_json(args.output_dir / "text_sequence_lengths.json", text_length_summary)
+        print_text_length_summary(text_length_summary)
     run_context.write_status(
         "running",
         sections={
@@ -2217,6 +2407,8 @@ def main(
                 "validation_source": validation_source,
                 "train_examples": len(train_examples),
                 "validation_examples": len(validation_examples),
+                "input_mode": args.input_mode,
+                "text_sequence_lengths": text_length_summary,
             },
             "validation_previews": {
                 "enabled": bool(validation_preview_examples),
@@ -2258,6 +2450,7 @@ def main(
             load_in_8bit=args.load_in_8bit,
             use_peft=use_peft,
             require_bitsandbytes="8bit" in resolve_optimizer(args, load_in_4bit),
+            require_images=args.input_mode == "image",
         )
         LoraConfig, get_peft_model, prepare_model_for_kbit_training = peft_fns
         vram_tracker = PeakVramTracker(torch, args.output_dir)
@@ -2266,7 +2459,8 @@ def main(
         gradient_checkpointing = resolve_gradient_checkpointing(args)
         bf16, fp16 = choose_precision_flags(args)
 
-        processor = AutoProcessor.from_pretrained(args.model_id, **build_processor_load_kwargs(args))
+        processor = (text_processor if text_processor is not None else
+                     AutoProcessor.from_pretrained(args.model_id, **build_processor_load_kwargs(args)))
         if processor.tokenizer.pad_token_id is None:
             processor.tokenizer.pad_token = processor.tokenizer.eos_token
         processor.tokenizer.padding_side = "right"
@@ -2369,14 +2563,17 @@ def main(
         }
         image_token_ids.discard(None)
 
-        train_dataset = Dataset.from_list(train_examples)
-        validation_dataset = Dataset.from_list(validation_examples)
-        data_collator = QwenVisionDataCollator(
-            processor=processor,
-            image_module=image_module,
-            max_length=args.max_length,
-            image_token_ids=image_token_ids,
-        )
+        if args.input_mode == "text":
+            train_dataset = Dataset.from_list(text_train_data)
+            validation_dataset = Dataset.from_list(text_validation_data)
+            data_collator = QwenTextDataCollator(tokenizer=processor.tokenizer)
+        else:
+            train_dataset = Dataset.from_list(train_examples)
+            validation_dataset = Dataset.from_list(validation_examples)
+            data_collator = QwenVisionDataCollator(
+                processor=processor, image_module=image_module, max_length=args.max_length,
+                image_token_ids=image_token_ids,
+            )
         callbacks = []
         if validation_preview_examples:
             callbacks.append(
@@ -2440,7 +2637,9 @@ def main(
         resolved_config = namespace_to_dict(args)
         resolved_config.update(
             {
-                "resolution_max_pixels": max_pixels_for_resolution(args.resolution),
+                "resolution_max_pixels": (max_pixels_for_resolution(args.resolution)
+                                          if args.input_mode == "image" else None),
+                "text_sequence_lengths": text_length_summary,
                 "resolved_dataset_root": resolved_dataset_root,
                 "source_layout": source_layout,
                 "train_source": train_source,

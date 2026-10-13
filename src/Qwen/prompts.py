@@ -38,3 +38,25 @@ def build_ocr_messages(
         {"role": "system", "content": [{"type": "text", "text": system_prompt + "\n" + contract}]},
         {"role": "user", "content": [{"type": "text", "text": user_prompt + "\n\nOCR text:\n" + text}]},
     ]
+
+
+def build_fusion_messages(
+    system_prompt: str, user_prompt: str, document: dict[str, Any], template: Any, schema: Any
+) -> list[dict[str, Any]]:
+    """Use the OCR text contract with structured layout evidence, without pixels."""
+    from src.fusion import to_llm_text
+
+    if not any(line["text"].strip() for page in document["pages"] for line in page["ocr"]["lines"]):
+        raise ValueError("OCR text is empty; refusing extraction without evidence.")
+    text = to_llm_text(document)
+    messages = build_ocr_messages(system_prompt, user_prompt, text, template, schema)
+    messages[0]["content"][0]["text"] += (
+        "\nThe input is OCR/layout representation JSON. Region labels and spatial memberships "
+        "are evidence, not authoritative semantic assignments. In separate mode, relate OCR "
+        "lines to layout regions yourself. In hard mode, fields contain assigned text. In soft "
+        "mode, a line may appear in multiple fields: use OCR IDs to avoid counting it twice, "
+        "and resolve candidate memberships semantically. Weights express relative geometric "
+        "overlap, not calibrated probabilities. Consider all OCR lines, including unassigned text."
+    )
+    messages[1]["content"][0]["text"] = user_prompt + "\n\nOCR/layout representation JSON:\n" + text
+    return messages

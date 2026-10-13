@@ -188,6 +188,10 @@ Resume an interrupted run:
 
 ## Inference
 
+The [unified inference entry point](../inference_pipeline/README.md) can select
+Donut checkpoints and reuse the loaded model across images, retaining this
+module's native defaults and generation logic.
+
 Run a saved checkpoint on one image:
 
 ```powershell
