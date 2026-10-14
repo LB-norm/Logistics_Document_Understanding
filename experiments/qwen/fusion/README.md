@@ -4,6 +4,9 @@ This campaign runs the same five training configurations on each of the
 `separate`, `hard`, and `soft` fusion representations: **15 runs** in total.
 Every run starts independently from `Qwen/Qwen3.5-9B` and uses text-only inputs.
 The model's vision weights are loaded but remain frozen; no images are processed.
+All 15 configs use the compact dataset and chunked answer-position loss with
+256 supervised positions per chunk. All runs use a 10-epoch screening schedule;
+there is no 75-step comparison limit.
 
 | ID | Base weights | Language tuning | Peak learning rate |
 | --- | --- | --- | ---: |
@@ -27,7 +30,7 @@ All configs explicitly use:
   quantization is not another varying factor in this comparison.
 - Physical train/evaluation batch size 1 and gradient accumulation 8, giving an
   effective training batch size of 8 on a single GPU.
-- Twenty epochs, cosine decay, 5% warmup, weight decay `0.01`, and gradient clipping
+- Ten epochs, cosine decay, 5% warmup, weight decay `0.01`, and gradient clipping
   norm `1.0`.
 - LoRA rank 16, alpha 32, dropout `0.05`, all matching language-side linear
   modules, and no additional `modules_to_save`, where adapters are used.
@@ -36,20 +39,45 @@ All configs explicitly use:
   validation generation previews every 50 optimizer steps, with a 2048-token
   generation budget capped by remaining context space.
 
+## Training budget
+
+The ten-epoch budget halves the epoch-dependent work of the original twenty-epoch
+campaign. The eight completed image-input runs currently available in `runs/`
+all achieved their lowest epoch validation loss between epochs 3 and 5, with
+higher losses afterwards. This supports a shorter screening budget, but those
+runs do not establish convergence for the text-only fusion data or its lower
+learning rates. Check the new validation curves and generated extraction
+metrics before deciding whether selected configurations need longer training.
+
+The cosine schedule and 5% warmup are calculated over the new ten-epoch horizon;
+this is a complete shorter schedule, rather than interrupting a twenty-epoch
+schedule halfway through. Compare all fifteen runs with the same epoch budget.
+Loading and final evaluation add fixed overhead, so wall-clock time will be
+approximately half rather than exactly half. Retained model sizes are unchanged.
+If a selected run warrants twenty epochs, start a new independent run with
+`--num-train-epochs 20` and a fresh output directory: the model-only checkpoints
+do not contain the state needed to resume the original training trajectory.
+
 ## Dataset and paths
 
-Prepare the data with the [batch fusion SFT builder](../../../src/fusion/README.md#batch-sft-dataset-preparation).
+Prepare the data with the [batch fusion SFT builder](../../../src/fusion/README.md#batch-sft-dataset-preparation),
+then generate the [compact dataset](../../../src/fusion/README.md#compact-sft-dataset):
+
+```bash
+python -m src.fusion.compact_sft
+```
+
 The configs default to the shared root:
 
 ```text
-data/datasets/250_CMRS_240dpi_20260707/fusion_sft/
+data/datasets/250_CMRS_240dpi_20260707/fusion_sft_compact/
   separate/train.jsonl   separate/val.jsonl
   hard/train.jsonl       hard/val.jsonl
   soft/train.jsonl       soft/val.jsonl
 ```
 
 Each config selects its mode through `train_file` and `validation_file`. Therefore
-a shared `--dataset-root` override must point to **fusion_sft itself**, and keeps
+a shared `--dataset-root` override must point to **fusion_sft_compact itself**, and keeps
 all three modes distinct. Paths in training configs are relative to the repository
 working directory; paths inside the queue are relative to `queue.json`.
 
@@ -84,33 +112,56 @@ python src/Qwen/run_qwen_experiment_queue.py experiments/qwen/fusion/queue.json 
   -- --dry-run --check-text-lengths
 ```
 
-Launch the campaign:
+Launch the full campaign inside a `tmux` session:
 
 ```bash
-python src/Qwen/run_qwen_experiment_queue.py experiments/qwen/fusion/queue.json \
-  -- --runs-dir runs/qwen-fusion
+bash experiments/qwen/fusion/run_queue.sh
 ```
+
+The launcher always passes `--continue-on-error`, so an OOM or another nonzero
+experiment exit is recorded and the next experiment starts in a fresh process.
+All GPU allocations owned by the terminated child process are released before
+the next process starts. Manual interruption still stops the queue.
+Runs and the appended queue log go to `runs/qwen-fusion-compact-chunked/`, separate
+from earlier standard-loss and short comparison runs. The final queue exit code
+is 1 if any experiments failed, even after it attempted all 15; otherwise it is 0.
+
+The script uses the active environment, or the repository's `.venv` when no
+environment is active. Override the interpreter with `QWEN_PYTHON` or the output
+root with `QWEN_FUSION_RUNS_DIR`. Additional script arguments are shared training
+overrides; for example `bash experiments/qwen/fusion/run_queue.sh --dry-run`
+validates all 15 datasets, and `--cache-dir /mnt/model-cache` selects a model cache.
 
 For a remote dataset/model cache, use the same shared overrides for every entry:
 
 ```bash
 python src/Qwen/run_qwen_experiment_queue.py experiments/qwen/fusion/queue.json \
+  --continue-on-error \
   -- \
-  --dataset-root /mnt/datasets/250_CMRS_240dpi_20260707/fusion_sft \
-  --runs-dir /mnt/experiments/qwen-fusion \
+  --dataset-root /mnt/datasets/250_CMRS_240dpi_20260707/fusion_sft_compact \
+  --runs-dir /mnt/experiments/qwen-fusion-compact-chunked \
   --cache-dir /mnt/model-cache
 ```
 
-The queue runs Q1 for separate/hard/soft first, then L1, L2, F1 and F2 in the same
-mode order. Each experiment runs in a fresh process and has a unique run name.
-The queue stops on the first failure; `--continue-on-error` attempts subsequent
-entries. To skip preceding completed entries, put `--start-at` before the `--`
+All nine adapter runs are attempted before any full-tuning run starts:
+
+- Runs 1–3: Q1 QLoRA, in separate/hard/soft order.
+- Runs 4–6: L1 LoRA, in separate/hard/soft order.
+- Runs 7–9: L2 LoRA, in separate/hard/soft order.
+- Runs 10–12: F1 full tuning, in separate/hard/soft order.
+- Runs 13–15: F2 full tuning, in separate/hard/soft order.
+
+Each experiment runs in a fresh process and has a unique run name.
+The script continues after failures. When invoking Python directly, include
+`--continue-on-error` for that behavior. To skip preceding completed entries,
+invoke Python with `--start-at` before the `--`
 separator, for example:
 
 ```bash
 python src/Qwen/run_qwen_experiment_queue.py experiments/qwen/fusion/queue.json \
+  --continue-on-error \
   --start-at qwen35-9b-fusion-hard-l1-bf16-r16-lr5e5 \
-  -- --runs-dir runs/qwen-fusion
+  -- --runs-dir runs/qwen-fusion-compact-chunked
 ```
 
 ## Outputs and comparison
@@ -119,6 +170,9 @@ Each run selects the checkpoint with the lowest validation `eval_loss` and
 retains its model/adapter in `best_model/`, following the existing experiment
 campaign's model-only policy (`save_only_model: true`, `save_total_limit: 1`).
 These checkpoints do not contain optimizer state and cannot resume training.
+Finalization renames the winning checkpoint rather than copying its weights,
+and deletes the remaining epoch checkpoints. Successful runs have no separate
+`last_model/` or additional weight export in the run root.
 The normal training config, run metadata, VRAM measurements, token-length report
 and validation previews are retained. Use `--save-resume-state --save-total-limit 2`
 after `--` if resumable best/last checkpoints are required instead.
@@ -130,3 +184,38 @@ not the full validation ranking. Compare fusion modes within each recipe and
 select each mode's best configuration using validation results. Keep the held-out
 test set for final reporting. Repeat close contenders with additional shared seeds
 before drawing conclusions; this queue is the initial seed-42 screening pass.
+
+## Recovering after a disk-space failure
+
+The shell launcher continues after failures, including a full disk. To stop on
+the first failure and free space before attempting later experiments, invoke
+Python directly without `--continue-on-error`:
+
+```bash
+python src/Qwen/run_qwen_experiment_queue.py experiments/qwen/fusion/queue.json \
+  -- --runs-dir runs/qwen-fusion-compact-chunked
+```
+
+Completed runs do not need to be retrained. After freeing space, restart at the
+first failed experiment using its name from `queue.log` or the console output.
+For example, if the first full-tuning experiment failed:
+
+```bash
+python src/Qwen/run_qwen_experiment_queue.py experiments/qwen/fusion/queue.json \
+  --start-at qwen35-9b-fusion-separate-f1-bf16-full-lr1e6 \
+  -- --runs-dir runs/qwen-fusion-compact-chunked
+```
+
+Repeat any original dataset/cache overrides after `--`. The failed experiment
+starts training from the base model; `--start-at` skips earlier queue entries
+and does not resume an epoch. Before retrying, remove or move aside that failed
+experiment's output directory to avoid mixing partial checkpoints with the new
+attempt. Preserve the completed experiments' directories.
+
+Best-only retention applies after successful completion. During training, the
+Trainer may retain both the best and latest checkpoints, with a third snapshot
+temporarily present while saving. Failed runs can leave those snapshots or
+partial files behind. Existing matching checkpoints put the final 15-run weights
+at about 115 GB, with roughly 150–160 GB needed during checkpoint saves,
+excluding the shared base-model cache and datasets. Keeping only the best still
+requires about 18.8 GB for each completed full-tuning run.

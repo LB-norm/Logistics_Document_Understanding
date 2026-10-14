@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -72,6 +76,69 @@ class QwenExperimentConfigTests(unittest.TestCase):
 
 
 class QwenExperimentQueueTests(unittest.TestCase):
+    def test_compact_fusion_queue_has_all_fifteen_ten_epoch_chunked_experiments(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        queue = load_experiment_queue(root / "experiments/qwen/fusion/queue.json")
+        self.assertEqual(len(queue.entries), 15)
+        names = set()
+        tuning_order = []
+        for entry in queue.entries:
+            self.assertTrue(entry.enabled)
+            args = parse_training_args(["--config", str(entry.config_path)], defaults=DEFAULT_TRAINING_CONFIG)
+            validate_training_options(args)
+            self.assertEqual(args.dataset_root, Path("data/datasets/250_CMRS_240dpi_20260707/fusion_sft_compact"))
+            self.assertEqual(args.loss_implementation, "chunked")
+            self.assertEqual(args.loss_chunk_size, 256)
+            self.assertEqual(args.num_train_epochs, 10)
+            self.assertEqual(args.max_steps, -1)
+            self.assertIsNone(args.stop_after_steps)
+            self.assertFalse(args.compare_loss)
+            self.assertFalse(args.dry_run)
+            self.assertTrue(args.save_only_model)
+            self.assertEqual(args.save_total_limit, 1)
+            self.assertEqual(args.eval_strategy, "epoch")
+            self.assertEqual(args.save_strategy, "epoch")
+            tuning_order.append((args.text_tuning, args.load_in_4bit))
+            self.assertEqual(args.train_file, f"{entry.config_path.parent.name}/train.jsonl")
+            self.assertEqual(args.validation_file, f"{entry.config_path.parent.name}/val.jsonl")
+            names.add(args.run_name)
+        self.assertEqual(len(names), 15)
+        self.assertEqual(
+            tuning_order,
+            [("lora", True)] * 3 + [("lora", False)] * 6 + [("full", False)] * 6,
+        )
+
+    def test_compact_fusion_queue_attempts_all_runs_after_oom_and_killed_process(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "experiments/qwen/fusion/queue.json"
+        calls = []
+        def fake_run(command, *, cwd, check):
+            calls.append(command)
+            return SimpleNamespace(returncode={1: 1, 10: -9}.get(len(calls), 0))
+        result = run_queue([str(path), "--continue-on-error"], run_process=fake_run)
+        self.assertEqual(len(calls), 15)
+        self.assertEqual(result, 1)
+
+    @unittest.skipUnless(shutil.which("bash"), "Bash launcher requires bash")
+    def test_fusion_launcher_enables_continuation_logs_and_preserves_failure_exit(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            interpreter = temporary / "fake-python"
+            interpreter.write_text(
+                f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\nsys.exit(1)\n")
+            interpreter.chmod(0o700)
+            runs = temporary / "runs"
+            env = dict(os.environ, QWEN_PYTHON=str(interpreter), QWEN_FUSION_RUNS_DIR=str(runs))
+            completed = subprocess.run(
+                ["bash", str(root / "experiments/qwen/fusion/run_queue.sh"), "--dry-run"],
+                cwd=temporary, env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            command = json.loads(completed.stdout)
+            self.assertIn("--continue-on-error", command[:command.index("--")])
+            self.assertEqual(command[-1], "--dry-run")
+            self.assertEqual(command[command.index("--runs-dir") + 1], str(runs))
+            self.assertEqual((runs / "queue.log").read_text(), completed.stdout)
+
     def test_main_queue_contains_the_seven_requested_tuning_methods(self) -> None:
         queue_path = Path(__file__).resolve().parents[1] / "experiments/qwen/queue.json"
         queue = load_experiment_queue(queue_path)

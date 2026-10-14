@@ -1,10 +1,12 @@
 {
   "format_version": 1,
   "name": "qwen35-9b-fusion-soft-l2-bf16-r16-lr1e5",
-  "description": "L2: BF16 LoRA rank 16 at 1e-5 on soft OCR/layout fusion conversations; frozen vision, AdamW with 32-bit optimizer states, effective batch size 8, twenty epochs, seed 42.",
+  "description": "L2: BF16 LoRA rank 16 at 1e-5 on soft OCR/layout fusion conversations; frozen vision, AdamW with 32-bit optimizer states, effective batch size 8, ten epochs, seed 42.",
   "training": {
-    "dataset_root": "data/datasets/250_CMRS_240dpi_20260707/fusion_sft",
+    "dataset_root": "data/datasets/250_CMRS_240dpi_20260707/fusion_sft_compact",
     "input_mode": "text",
+    "loss_implementation": "chunked",
+    "loss_chunk_size": 256,
     "model_id": "Qwen/Qwen3.5-9B",
     "model_class": "auto",
     "schema_path": "json_schema/content.schema.json",
@@ -18,7 +20,7 @@
     "per_device_train_batch_size": 1,
     "per_device_eval_batch_size": 1,
     "gradient_accumulation_steps": 8,
-    "num_train_epochs": 20,
+    "num_train_epochs": 10,
     "max_steps": -1,
     "learning_rate": 0.00001,
     "weight_decay": 0.01,

@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "name": "qwen35-9b-ocr-layout-fusion",
-  "description": "Fifteen text-only Qwen3.5 9B runs, each trained for 20 epochs: Q1 NF4 QLoRA, L1/L2 BF16 LoRA, and F1/F2 full BF16 language tuning for separate, hard and soft fusion. Run each recipe across all three modes before advancing to the next recipe.",
+  "description": "Fifteen text-only Qwen3.5 9B runs on fusion_sft_compact with chunked answer-position loss (256 positions per chunk), each trained for 10 epochs. Complete all nine adapter runs first (Q1 NF4 QLoRA, then L1/L2 BF16 LoRA), followed by the six full BF16 language runs (F1/F2); each recipe runs separate, hard and soft in that order. Successful runs retain only their best model. Use run_queue.sh to continue after failed experiments, or invoke Python without --continue-on-error to stop and free disk space before restarting with --start-at.",
   "experiments": [
     {
       "config": "separate/q1_nf4_qlora_r16_lr5e5.json",
