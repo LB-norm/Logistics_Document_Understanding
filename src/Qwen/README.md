@@ -77,6 +77,88 @@ setting before importing PyTorch. This reduces allocator fragmentation for varia
 training allocation sizes. An explicitly exported `PYTORCH_CUDA_ALLOC_CONF` value
 takes precedence over this default.
 
+## Memory-efficient text loss and comparison
+
+`--loss-implementation chunked --loss-chunk-size 256` enables an opt-in
+text-only Qwen3.5 loss. `standard` remains the default and retains the original
+forward. The chunked path runs the same native backbone on the full sequence,
+selects positions whose **next-token** labels are supervised, and projects those
+positions through the existing LM head in chunks. It uses native PyTorch FP32
+cross-entropy and non-reentrant activation checkpointing for projection/loss.
+Backward recomputes each chunk rather than retaining vocabulary-sized activations.
+The full vocabulary, answer tokens, prompt gradient flow, and per-microbatch mean
+loss/Trainer gradient-accumulation scaling are preserved. No optimizer, data,
+quantization or learning-rate settings are changed. Unlabeled generation keeps
+the original model forward. Teacher-forced evaluation returns loss only.
+
+Chunk recomputation trades some work for memory; actual throughput and VRAM
+savings must be measured on the training GPU. Shape changes in GEMM and reduction
+order can cause small numerical differences, especially with BF16. This is not a
+promise of bitwise-identical trajectories or final quality.
+
+Before starting a new run, compare both implementations at identical weights and
+RNG state on the shortest two **complete** training examples (no truncation):
+
+```bash
+python src/Qwen/run_qwen_training.py \
+  --config experiments/qwen/fusion/separate/q1_nf4_qlora_r16_lr5e5.json \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707/fusion_sft_compact \
+  --compare-loss --comparison-samples 2 --loss-chunk-size 256 \
+  --output-dir runs/qwen-loss-check
+```
+
+`loss_comparison.json` reports losses, all trainable gradients' relative L2 error,
+gradient-presence mismatches, measured forward/backward time, and CUDA peak memory.
+It exits without optimizer updates, restoring RNG state and clearing gradients.
+Pass `--resume-from-checkpoint /path/to/old/checkpoint-N` to compare at existing
+checkpoint weights: this comparison loads **weights only**, not optimizer state.
+Model-only checkpoints are sufficient for this check. Reference gradients are
+held in CPU RAM; checking full tuning can therefore use substantial host memory.
+Timings include warmup and are diagnostic rather than a throughput benchmark.
+The report gates FP32 relative loss/gradient errors at `1e-5`/`1e-4`, and mixed
+precision at `1e-4`/`0.02`. These are numerical regression gates, not quality claims;
+review the actual reported differences. A failed comparison exits with code 1.
+
+An interrupted standard run's early epochs can also be used for a short training
+comparison. Keep the original dataset, seed, precision, batch/accumulation sizes,
+optimizer, preview settings and **planned 20 epochs**. Restart the chunked run
+from the same initialization and stop at the same optimizer step:
+
+```bash
+python src/Qwen/run_qwen_training.py \
+  --config experiments/qwen/fusion/separate/q1_nf4_qlora_r16_lr5e5.json \
+  --dataset-root data/datasets/250_CMRS_240dpi_20260707/fusion_sft_compact \
+  --loss-implementation chunked --loss-chunk-size 256 \
+  --stop-after-steps 75 --save-resume-state --save-total-limit 2 \
+  --output-dir runs/qwen-chunked-early-comparison
+```
+
+For this 200-example, batch-1, accumulation-8 configuration, each epoch has 25
+optimizer steps; step 75 is three epochs. Set the stop step from the actual old
+Trainer state/log. `--stop-after-steps` leaves the planned scheduler horizon intact;
+`--max-steps 75` or `--num-train-epochs 3` would change the cosine schedule and
+invalidate that comparison. Use a separate output directory and preserve the old
+checkpoint/log. Compare the matching epoch validation losses:
+
+```bash
+python -m src.Qwen.compare_training_histories \
+  /path/to/old/checkpoint-75/trainer_state.json \
+  runs/qwen-chunked-early-comparison/trainer_state.json
+```
+
+Keep library/kernel versions and hardware fixed. The history comparison pairs
+validation losses by optimizer step; it cannot verify those experimental controls
+for you. It uses the first evaluation at each step so final reevaluation of the
+selected best checkpoint cannot replace an epoch-boundary measurement.
+Generation previews cover only two documents; assess field metrics on
+the same complete validation split if comparing extraction quality. Early epochs
+can expose regressions without finishing 20 epochs, but cannot prove final
+convergence. For faithful training continuation, optimizer/scheduler/RNG resume
+state is required; the fusion queue's model-only checkpoints do not contain it.
+
+After verification, enable the loss on the queue by forwarding
+`--loss-implementation chunked --loss-chunk-size 256` after its `--` separator.
+
 The first run downloads the base model from Hugging Face. Use
 `--local-files-only` only after the checkpoint is cached.
 

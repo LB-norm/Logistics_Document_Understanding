@@ -186,6 +186,18 @@ def parse_args(
     )
     parser.add_argument("--num-train-epochs", type=float, default=10.0, help="Training epochs.")
     parser.add_argument(
+        "--loss-implementation", choices=["standard", "chunked"], default="standard",
+        help="chunked: text-only Qwen3.5 answer-position projection and checkpointed FP32 loss; standard retains the original forward.",
+    )
+    parser.add_argument("--loss-chunk-size", type=int, default=256,
+                        help="Maximum supervised positions per vocabulary projection/loss chunk.")
+    parser.add_argument("--compare-loss", action="store_true",
+                        help="Compare standard/chunked losses and gradients at identical weights, write a report, then exit without training.")
+    parser.add_argument("--comparison-samples", type=int, default=2,
+                        help="Number of shortest complete training examples used by --compare-loss.")
+    parser.add_argument("--stop-after-steps", type=int, default=None,
+                        help="Stop early at this global optimizer step while retaining the original scheduler horizon; unlike --max-steps.")
+    parser.add_argument(
         "--learning-rate",
         type=float,
         default=5e-5,
@@ -1625,6 +1637,14 @@ def validate_training_options(args: argparse.Namespace) -> None:
         raise ValueError("--input-mode must be image or text.")
     if args.check_text_lengths and args.input_mode != "text":
         raise ValueError("--check-text-lengths requires --input-mode text.")
+    if args.loss_implementation not in {"standard", "chunked"}:
+        raise ValueError("--loss-implementation must be standard or chunked.")
+    if (args.loss_implementation == "chunked" or args.compare_loss) and args.input_mode != "text":
+        raise ValueError("Chunked loss/comparison currently requires --input-mode text.")
+    if args.loss_chunk_size < 1 or args.comparison_samples < 1:
+        raise ValueError("Loss chunk size and comparison sample count must be positive.")
+    if args.stop_after_steps is not None and args.stop_after_steps < 1:
+        raise ValueError("--stop-after-steps must be positive.")
     if args.input_mode == "text":
         if args.vision_tuning != "frozen" or args.vision_merger_tuning != "frozen":
             raise ValueError("Text-only training requires frozen vision blocks and vision merger.")
@@ -2310,6 +2330,16 @@ def retain_best_model_only(
     }
 
 
+def build_stop_after_steps_callback(TrainerCallback: Any, step: int) -> Any:
+    """Stop a comparison run without shortening Trainer's planned LR schedule."""
+    class StopAfterStepsCallback(TrainerCallback):
+        def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            if state.global_step >= step:
+                control.should_training_stop = True
+            return control
+    return StopAfterStepsCallback()
+
+
 def main(
     argv: Sequence[str] | None = None,
     defaults: Mapping[str, Any] | None = None,
@@ -2602,6 +2632,19 @@ def main(
             load_in_4bit=load_in_4bit,
         )
 
+        if args.loss_implementation == "chunked" or args.compare_loss:
+            from src.Qwen.chunked_loss import ChunkedLossController
+            loss_controller = ChunkedLossController(model, args.loss_chunk_size)
+            loss_controller.enabled = args.loss_implementation == "chunked"
+            # Teacher-forced validation needs the scalar loss only. Generation
+            # previews use unlabeled native forwards and remain unchanged.
+            training_args.prediction_loss_only = True
+        else:
+            loss_controller = None
+
+        if args.stop_after_steps is not None:
+            callbacks.append(build_stop_after_steps_callback(TrainerCallback, args.stop_after_steps))
+
         trainer = Trainer(
             model=model,
             args=training_args,
@@ -2611,6 +2654,26 @@ def main(
             callbacks=callbacks,
         )
         vram_tracker.record("model_loaded", trainer.state.global_step)
+
+        if args.compare_loss:
+            from src.Qwen.loss_comparison import compare_loss_methods
+            if args.resume_from_checkpoint is not None:
+                # Comparison loads only weights. It makes no optimizer update,
+                # so optimizer/scheduler/RNG resume state is neither needed nor loaded.
+                trainer._load_from_checkpoint(args.resume_from_checkpoint)
+            selected = sorted(text_train_data, key=lambda row: len(row["input_ids"]))[:args.comparison_samples]
+            batches = [_move_batch_to_device(data_collator([row]), _model_input_device(model))
+                       for row in selected]
+            report = compare_loss_methods(model, loss_controller, batches, args.compute_dtype)
+            report["sample_ids"] = [row["id"] for row in selected]
+            report["comparison_checkpoint"] = args.resume_from_checkpoint
+            write_json(args.output_dir / "loss_comparison.json", report)
+            vram_summary = vram_tracker.record("loss_comparison", 0)
+            run_context.write_status("completed" if report["passed"] else "failed", sections={
+                "loss_comparison": report, "vram": vram_summary,
+            })
+            print(json.dumps(report, indent=2))
+            return 0 if report["passed"] else 1
 
         train_result = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
         eval_metrics = trainer.evaluate()

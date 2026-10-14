@@ -119,6 +119,50 @@ without loading model weights.
 The Python API is available as
 `src.fusion.dataset.prepare_fusion_dataset(dataset_root, output_dir, ...)`.
 
+## Compact SFT dataset
+
+Convert the existing full fusion conversations without rerunning OCR or layout
+detection:
+
+```bash
+python -m src.fusion.compact_sft
+```
+
+The defaults read `data/datasets/250_CMRS_240dpi_20260707/fusion_sft` and write
+`data/datasets/250_CMRS_240dpi_20260707/fusion_sft_compact`. Use `--input-dir`,
+`--output-dir`, and `--decimals` for other locations or precision (default: four
+decimal places). Direct invocation `python src/fusion/compact_sft.py` also works.
+An existing output directory is refused. All modes and splits listed in the source
+preparation summary are validated and staged before the new directory is published.
+
+Every OCR line remains present once, in its original order, with its polygon and
+confidence. Region labels, boxes and scores are retained. Line and region IDs
+become independent zero-based integers within each page. Hard/soft candidate
+memberships, candidate order, overlaps and weights are retained; assignments are
+not recomputed from rounded geometry. An empty candidate list denotes unassigned
+text. Derived OCR bounding boxes, duplicate document/page/field text, duplicate
+region fields, and execution metadata are omitted from the model input.
+
+The compact JSON uses arrays whose columns are defined in the revised system prompt:
+
+- `lines`: `[line_id, text, polygon, ocr_confidence]`.
+- `regions`: `[region_id, label, box_xyxy, layout_confidence]`.
+- `memberships` (hard/soft only): `[line_id, [[region_id, overlap, weight], ...]]`.
+
+Sample IDs, split membership, assistant answer strings and target objects are
+preserved. Rounding applies only to input evidence. Schema/template copies and
+their prompt contract are retained. Provenance remains outside the messages and
+its artifact paths are rebased to the new output root. Character/byte lengths are
+recomputed; the summary compares original and compact conversation sizes.
+Use the same compact serialization and column instructions for downstream
+inference; `src.fusion.compact.compact_document()` is available for that purpose.
+
+Run the fusion queue against the compact files by passing
+`--dataset-root data/datasets/250_CMRS_240dpi_20260707/fusion_sft_compact` after
+the queue's `--` separator. Existing per-mode train/validation filenames still apply.
+Verify actual token lengths with `--dry-run --check-text-lengths` on the training
+machine; character reduction does not guarantee a particular GPU memory budget.
+
 ## Command line
 
 To run OCR, YOLO, fusion, and downstream LLM generation together, use the
