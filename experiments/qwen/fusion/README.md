@@ -185,7 +185,7 @@ select each mode's best configuration using validation results. Keep the held-ou
 test set for final reporting. Repeat close contenders with additional shared seeds
 before drawing conclusions; this queue is the initial seed-42 screening pass.
 
-## Test-set inference for the 14 completed runs
+## Test-set inference
 
 Run the compact-fusion inference launcher from the repository root:
 
@@ -193,12 +193,19 @@ Run the compact-fusion inference launcher from the repository root:
 .venv/bin/python -u experiments/qwen/fusion/run_testset.py
 ```
 
-The launcher expects 14 completed `best_model/` directories under
-`runs/qwen-fusion-compact-chunked/` and 30 PNG test images under
+The launcher discovers completed `best_model/` directories under
+`runs/qwen-fusion-compact-chunked/` and expects 30 PNG test images under
 `data/datasets/250_CMRS_240dpi_20260707/test/images/`. It skips runs without a
 `best_model/`, reuses the saved compact training prompt contract and rounding
 precision, and preserves each run's NF4/BF16 loading settings. Each model runs
 in a separate process; later models are attempted even if an earlier one fails.
+
+To infer only the newly completed soft/F2 model:
+
+```bash
+.venv/bin/python -u experiments/qwen/fusion/run_testset.py \
+  --run qwen35-9b-fusion-soft-f2-bf16-full-lr5e6
+```
 
 Predictions and `inference_manifest.jsonl` diagnostics are written to
 `output/qwen-fusion-compact-chunked-test/<run-name>/`. Existing results for the

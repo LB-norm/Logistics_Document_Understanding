@@ -1,18 +1,25 @@
-"""Run the 14 completed compact-fusion models on the 30 test images.
+"""Run completed compact-fusion models on the 30 test images.
 
 Execute from the remote repository root using its Python environment.
 Uses saved compact prompts and training precision; writes predictions and
 diagnostics with GPU OCR. Override the layout model with
 QWEN_FUSION_YOLO_MODEL_DIR if needed.
 """
+import argparse
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--run', metavar='NAME', help='Infer only this completed run; defaults to all completed runs')
+options = parser.parse_args()
 runs_root = Path('runs/qwen-fusion-compact-chunked')
 runs = sorted(p for p in runs_root.glob('qwen35-*') if (p / 'best_model').is_dir())
-assert len(runs) == 14, f'Expected 14 completed models, found {len(runs)}'
+if options.run is not None:
+    runs = [run for run in runs if run.name == options.run]
+if not runs:
+    parser.error(f'No completed best_model found for {options.run or "any run"} under {runs_root}')
 worker = r'''
 import json
 import os
@@ -68,7 +75,7 @@ raise SystemExit(main(args + ['--images', *map(str, images)]))
 '''
 failed = []
 for index, run in enumerate(runs, 1):
-    print(f'[{index}/14] {run.name}', flush=True)
+    print(f'[{index}/{len(runs)}] {run.name}', flush=True)
     result = subprocess.run([sys.executable, '-u', '-c', worker, str(run)])
     if result.returncode:
         failed.append(run.name)
