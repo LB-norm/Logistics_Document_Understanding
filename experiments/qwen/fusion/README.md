@@ -185,6 +185,40 @@ select each mode's best configuration using validation results. Keep the held-ou
 test set for final reporting. Repeat close contenders with additional shared seeds
 before drawing conclusions; this queue is the initial seed-42 screening pass.
 
+## Test-set inference for the 14 completed runs
+
+Run the compact-fusion inference launcher from the repository root:
+
+```bash
+.venv/bin/python -u experiments/qwen/fusion/run_testset.py
+```
+
+The launcher expects 14 completed `best_model/` directories under
+`runs/qwen-fusion-compact-chunked/` and 30 PNG test images under
+`data/datasets/250_CMRS_240dpi_20260707/test/images/`. It skips runs without a
+`best_model/`, reuses the saved compact training prompt contract and rounding
+precision, and preserves each run's NF4/BF16 loading settings. Each model runs
+in a separate process; later models are attempted even if an earlier one fails.
+
+Predictions and `inference_manifest.jsonl` diagnostics are written to
+`output/qwen-fusion-compact-chunked-test/<run-name>/`. Existing results for the
+same run are replaced. A nonzero exit status means at least one run reported
+an inference, parsing, schema, or initialization error; inspect its diagnostics
+and console output.
+
+The default YOLO checkpoint is `runs/yolo_v11s/cmr_100epochs/best_model`.
+To select another layout checkpoint, set `QWEN_FUSION_YOLO_MODEL_DIR`:
+
+```bash
+QWEN_FUSION_YOLO_MODEL_DIR=runs/yolo_v11s/cmr_50epochs/best_model \
+  .venv/bin/python -u experiments/qwen/fusion/run_testset.py
+```
+
+The launcher uses the local PP-OCRv6 medium detection and recognition weights
+under `output/ocr_v6_model_cache/official_models/`, plus the existing local Qwen
+cache. Its Python source lives alongside the tracked experiment files so it can
+be transferred with the repository.
+
 ## Recovering after a disk-space failure
 
 The shell launcher continues after failures, including a full disk. To stop on
