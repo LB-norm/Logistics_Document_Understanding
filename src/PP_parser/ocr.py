@@ -21,6 +21,7 @@ class OCRConfig:
     pdf_dpi: int = 240
     text_detection_model_dir: Path | None = None
     text_recognition_model_dir: Path | None = None
+    enable_mkldnn: bool | None = None
 
     def __post_init__(self) -> None:
         if self.model_size not in {"medium", "small", "tiny"}:
@@ -43,6 +44,8 @@ class OCRConfig:
         for key in ("text_detection_model_dir", "text_recognition_model_dir"):
             if getattr(self, key) is not None:
                 settings[key] = str(Path(getattr(self, key)).resolve())
+        if self.enable_mkldnn is not None:
+            settings["enable_mkldnn"] = self.enable_mkldnn
         return settings
 
 

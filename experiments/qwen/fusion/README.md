@@ -216,7 +216,11 @@ QWEN_FUSION_YOLO_MODEL_DIR=runs/yolo_v11s/cmr_50epochs/best_model \
 
 The launcher uses the local PP-OCRv6 medium detection and recognition weights
 under `output/ocr_v6_model_cache/official_models/`, plus the existing local Qwen
-cache. Its Python source lives alongside the tracked experiment files so it can
+cache. It explicitly selects `--ocr-device gpu:0` and requires a compatible
+`paddlepaddle-gpu` installation. OCR, YOLO, and Qwen share the GPU, with each
+image's stages executed sequentially. Underlying per-image exceptions are printed
+to the console and retained in the manifest.
+Its Python source lives alongside the tracked experiment files so it can
 be transferred with the repository.
 
 ## Recovering after a disk-space failure

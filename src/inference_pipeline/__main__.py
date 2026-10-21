@@ -31,6 +31,8 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, P
     parser.add_argument("--ocr-min-confidence", type=float)
     parser.add_argument("--ocr-detection-model-dir", type=Path)
     parser.add_argument("--ocr-recognition-model-dir", type=Path)
+    parser.add_argument("--ocr-disable-mkldnn", action="store_true",
+                        help="Disable PaddleOCR's CPU oneDNN backend to avoid PIR attribute conversion failures")
     parser.add_argument("--min-overlap", type=float, default=0.1)
     parser.add_argument("--output-dir", type=Path, default=Path("output/inference_pipeline"))
     parser.add_argument("--dry-run", action="store_true", help="Validate paths/settings without loading models or writing files")
@@ -50,6 +52,7 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, P
         ("min_confidence", args.ocr_min_confidence),
         ("text_detection_model_dir", args.ocr_detection_model_dir),
         ("text_recognition_model_dir", args.ocr_recognition_model_dir),
+        ("enable_mkldnn", False if args.ocr_disable_mkldnn else None),
     ) if value is not None}
     try:
         config = PipelineConfig(
@@ -122,6 +125,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 manifest.flush()
                 failed += record["status"] != "ok"
                 print(f"{path}: {record['status']} ({record['inference_seconds']:.3f}s)")
+                if record.get("error"):
+                    print(f"  {record['error']}", file=sys.stderr, flush=True)
         print(f"Saved predictions and measurements to {args.output_dir}")
         return int(failed > 0)
     except (ValueError, OSError, RuntimeError) as exc:

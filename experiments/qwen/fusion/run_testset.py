@@ -2,7 +2,7 @@
 
 Execute from the remote repository root using its Python environment.
 Uses saved compact prompts and training precision; writes predictions and
-diagnostics without changing checkpoints. Override the layout model with
+diagnostics with GPU OCR. Override the layout model with
 QWEN_FUSION_YOLO_MODEL_DIR if needed.
 """
 import json
@@ -53,6 +53,7 @@ args = [
         'runs/yolo_v11s/cmr_100epochs/best_model'),
     '--ocr-detection-model-dir', str(ocr / 'PP-OCRv6_medium_det'),
     '--ocr-recognition-model-dir', str(ocr / 'PP-OCRv6_medium_rec'),
+    '--ocr-device', 'gpu:0',
     '--schema-path', str(data / 'schema.json'),
     '--template-path', str(data / 'template.json'),
     '--annotation-target-key', 'root',

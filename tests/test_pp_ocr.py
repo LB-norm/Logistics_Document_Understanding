@@ -116,6 +116,23 @@ class PPOCRTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "requires paddleocr>=3.7"):
                 OCRExtractor().extract(np.zeros((20, 30, 3), dtype=np.uint8))
 
+    def test_mkldnn_override_reaches_paddle_constructor_and_document_settings(self):
+        for enabled in (None, False, True):
+            with self.subTest(enabled=enabled):
+                factory = MagicMock(return_value=pipeline_for())
+                with patch("src.PP_parser.ocr.version", return_value="3.7.0"), patch.dict(
+                    "sys.modules", {"paddleocr": SimpleNamespace(PaddleOCR=factory)}
+                ):
+                    document = OCRExtractor(OCRConfig(enable_mkldnn=enabled)).extract(
+                        np.zeros((20, 30, 3), dtype=np.uint8)
+                    )
+                if enabled is None:
+                    self.assertNotIn("enable_mkldnn", factory.call_args.kwargs)
+                    self.assertNotIn("enable_mkldnn", document["settings"])
+                else:
+                    self.assertIs(factory.call_args.kwargs["enable_mkldnn"], enabled)
+                    self.assertIs(document["settings"]["enable_mkldnn"], enabled)
+
     def test_cli_validates_configuration_without_loading_ocr(self):
         self.assertEqual(parse_ocr_args(["--input-paths", "cmr.png"] ).model_size, "medium")
         with contextlib.redirect_stderr(io.StringIO()):

@@ -104,6 +104,8 @@ CPU inference and medium model size. Optional wrapper settings include
 `--ocr-min-confidence`, `--ocr-detection-model-dir`,
 `--ocr-recognition-model-dir`, and `--min-overlap`. For Paddle GPU inference, add
 `--ocr-device gpu:0` with the corresponding Paddle GPU installation.
+For CPU failures mentioning `ConvertPirAttribute2RuntimeAttribute` in oneDNN,
+add `--ocr-disable-mkldnn` to use standard CPU kernels. This can make OCR slower.
 
 Append `--dry-run` to validate input files, output path collisions, selected
 configuration, model-native arguments, schema/template, adapter directory, and

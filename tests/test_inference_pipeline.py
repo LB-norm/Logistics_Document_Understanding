@@ -227,6 +227,30 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("vram", records[0])
         self.assertNotIn("prediction", records[0])
 
+    def test_cli_can_disable_ocr_mkldnn_without_forwarding_flag_to_qwen(self):
+        args = ["--mode", "parser", "--model-id", "Qwen/test", "--images", str(self.images[0]),
+                "--fusion-mode", "soft", "--yolo-model-dir", str(self.weights), *self.native]
+        _, default = parse_args(args)
+        _, disabled = parse_args(args + ["--ocr-disable-mkldnn"])
+        self.assertIsNone(default.ocr_config.enable_mkldnn)
+        self.assertIs(disabled.ocr_config.enable_mkldnn, False)
+        InferencePipeline(disabled)
+
+    def test_cli_prints_inference_exception_and_retains_it_in_manifest(self):
+        output = self.root / "failed"
+        args = ["--mode", "end-to-end", "--model-id", "Qwen/test", "--images", str(self.images[0]),
+                "--output-dir", str(output), *self.native]
+        runtime = qwen_runtime()
+        runtime.model.generate.side_effect = RuntimeError("underlying backend failure")
+        errors = io.StringIO()
+        with patch.object(qwen, "load_inference_runtime", return_value=runtime), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+            self.assertEqual(main(args), 1)
+        self.assertIn("RuntimeError: underlying backend failure", errors.getvalue())
+        record = json.loads((output / "inference_manifest.jsonl").read_text())
+        self.assertEqual(record["error"], "RuntimeError: underlying backend failure")
+        self.assertIsNone(record["prediction_path"])
+
     def test_cli_parser_writes_fusion_artifact_and_returns_nonzero_for_failure(self):
         output = self.root / "parser"
         args = ["--mode", "parser", "--model-id", "Qwen/test", "--images", str(self.images[0]),
