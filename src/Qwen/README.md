@@ -2,6 +2,11 @@
 
 This pipeline fine-tunes Qwen models for CMR and delivery-note extraction using
 document images or text-only OCR/layout conversations.
+Hybrid image + hard-fusion training and inference are described in the
+[four-run hybrid campaign](../../experiments/qwen/hybrid/README.md).
+The current stage-one experiment is the
+[three-run NF4 input comparison](../../experiments/qwen/input_comparison/README.md),
+with aligned OCR-only, layout-only, and hard-fusion evidence beside the full image.
 The default run uses `Qwen/Qwen3.5-2B`; its VRAM requirement depends strongly on the
 selected resolution and document sequence lengths.
 

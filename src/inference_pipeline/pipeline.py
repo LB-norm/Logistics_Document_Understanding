@@ -29,8 +29,8 @@ class PipelineConfig:
     model_args: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.mode not in {"end-to-end", "parser"}:
-            raise ValueError("mode must be end-to-end or parser")
+        if self.mode not in {"end-to-end", "parser", "hybrid"}:
+            raise ValueError("mode must be end-to-end, parser, or hybrid")
         if self.model_type not in {"qwen", "donut"}:
             raise ValueError("model_type must be qwen or donut")
         if not self.model_id and self.adapter_path is None:
@@ -39,14 +39,18 @@ class PipelineConfig:
             object.__setattr__(self, "adapter_path", Path(self.adapter_path))
         if self.yolo_model_dir is not None:
             object.__setattr__(self, "yolo_model_dir", Path(self.yolo_model_dir))
-        if self.mode == "parser":
+        if self.mode in {"parser", "hybrid"}:
             if self.model_type != "qwen":
-                raise ValueError("Parser mode currently supports Qwen as the downstream text LLM")
-            if self.fusion_mode is None or self.yolo_model_dir is None:
+                raise ValueError("Parser/hybrid mode currently supports Qwen")
+            if self.mode == "hybrid" and self.fusion_mode is None:
+                object.__setattr__(self, "fusion_mode", "hard")
+            if self.fusion_mode is None or (self.mode == "parser" and self.yolo_model_dir is None):
                 raise ValueError("Parser mode requires fusion_mode and yolo_model_dir")
             FusionConfig(self.fusion_mode, self.min_overlap)
+            if self.mode == "hybrid" and FusionConfig(self.fusion_mode, self.min_overlap).mode != 2:
+                raise ValueError("Hybrid mode requires hard fusion")
         elif self.fusion_mode is not None or self.yolo_model_dir is not None:
-            raise ValueError("Fusion and YOLO options require parser mode")
+            raise ValueError("Fusion and YOLO options require parser or hybrid mode")
         if self.model_type == "donut" and self.adapter_path is not None:
             raise ValueError("Donut takes a complete model checkpoint, not a Qwen adapter")
         if self.yolo_threshold is not None and not 0 <= self.yolo_threshold <= 1:
@@ -57,7 +61,8 @@ def _native_args(config: PipelineConfig) -> Any:
     # Input/output selection belongs to this wrapper. Other settings go directly
     # through the selected model's existing parser, retaining its own defaults.
     reserved = {"--image-path", "--image-paths", "--ocr-text-paths", "--output-path",
-                "--output-dir", "--diagnostics-path", "--model-id", "--adapter-path"}
+                "--output-dir", "--diagnostics-path", "--model-id", "--adapter-path",
+                "--hybrid", "--fusion-json-paths"}
     if any(token.split("=", 1)[0] in reserved for token in config.model_args):
         raise ValueError("Use PipelineConfig or wrapper flags for input, output, and model selection")
     argv = list(config.model_args)
@@ -78,6 +83,8 @@ def _native_args(config: PipelineConfig) -> Any:
             # Native Qwen defaults/model resolution should select the text path.
             # The actual representation is supplied in memory, never read here.
             argv.extend(["--ocr-text-paths", "<in-memory-fusion>"])
+        elif config.mode == "hybrid":
+            argv.append("--hybrid")
         return qwen.parse_args(argv)
     return donut.parse_args(argv)
 
@@ -95,11 +102,22 @@ class InferencePipeline:
         self.args = _native_args(config)
         self.backend = qwen if config.model_type == "qwen" else donut
         template_path = self.args.template_path if config.model_type == "qwen" else self.args.example_path
-        self.schema = self.backend.load_json(self.args.schema_path)
-        self.template = self.backend.extract_json_target(
-            self.backend.load_json(template_path), self.args.annotation_target_key,
-        )
-        self.target_schema = self.backend.select_schema_node_for_target(self.schema, self.args.annotation_target_key)
+        contract = qwen.load_hybrid_contract(self.args) if config.mode == "hybrid" else None
+        self.evidence_mode = ((contract or {}).get("evidence_mode", self.args.hybrid_evidence or "hard")
+                              if config.mode == "hybrid" else None)
+        self.needs_ocr = config.mode == "parser" or config.mode == "hybrid" and self.evidence_mode in {"ocr", "hard"}
+        self.needs_layout = config.mode == "parser" or config.mode == "hybrid" and self.evidence_mode in {"layout", "hard"}
+        if self.needs_layout and config.yolo_model_dir is None:
+            raise ValueError("Layout/hard-fusion inference requires yolo_model_dir")
+        if contract is not None:
+            self.schema = self.target_schema = contract["schema"]
+            self.template = contract["template"]
+        else:
+            self.schema = self.backend.load_json(self.args.schema_path)
+            self.template = self.backend.extract_json_target(
+                self.backend.load_json(template_path), self.args.annotation_target_key,
+            )
+            self.target_schema = self.backend.select_schema_node_for_target(self.schema, self.args.annotation_target_key)
         if config.model_type == "qwen":
             errors = validate_json_schema(self.template, self.target_schema)
             if errors:
@@ -108,19 +126,19 @@ class InferencePipeline:
         self.ocr: Any = None
         self.layout: Any = None
         self.fusion = (FusionPipeline(FusionConfig(config.fusion_mode, config.min_overlap))
-                       if config.mode == "parser" else None)
+                       if config.mode in {"parser", "hybrid"} else None)
 
     def load(self) -> "InferencePipeline":
         if self.runtime is None:
             self.runtime = self.backend.load_inference_runtime(self.args)
-        if self.config.mode == "parser":
+        if self.needs_ocr:
             if self.ocr is None:
                 self.ocr = OCRExtractor(self.config.ocr_config)
             self.ocr.load()
-            if self.layout is None:
-                from src.yolo_v11s.inference import LayoutDetector
+        if self.needs_layout and self.layout is None:
+            from src.yolo_v11s.inference import LayoutDetector
 
-                self.layout = LayoutDetector(self.config.yolo_model_dir, device=self.config.yolo_device)
+            self.layout = LayoutDetector(self.config.yolo_model_dir, device=self.config.yolo_device)
         return self
 
     @staticmethod
@@ -159,6 +177,7 @@ class InferencePipeline:
             "model_id": getattr(self.runtime, "model_id", self.args.model_id),
             "adapter_path": str(self.args.adapter_path) if self.config.model_type == "qwen" and self.args.adapter_path else None,
             "fusion_mode": self.fusion.config.mode if self.fusion else None,
+            **({"evidence_mode": self.evidence_mode} if self.evidence_mode is not None else {}),
             "prediction": None, "stages": stages,
         }
         # CPU-only Donut never probes unrelated GPUs. Qwen's native device map
@@ -167,11 +186,19 @@ class InferencePipeline:
             try:
                 representation = None
                 if self.fusion is not None:
-                    ocr = self._stage(stages, "ocr", "paddle", lambda: self.ocr.extract(path))
-                    if not any(line["text"].strip() for page in ocr["pages"] for line in page["lines"]):
+                    ocr = self._stage(stages, "ocr", "paddle", lambda: self.ocr.extract(path)) if self.needs_ocr else None
+                    if self.config.mode == "parser" and not any(line["text"].strip() for page in ocr["pages"] for line in page["lines"]):
                         raise ValueError("OCR text is empty; refusing extraction without evidence")
                     kwargs = {} if self.config.yolo_threshold is None else {"threshold": self.config.yolo_threshold}
-                    layout = self._stage(stages, "yolo", "torch", lambda: self.layout.predict(path, **kwargs))
+                    layout = self._stage(stages, "yolo", "torch", lambda: self.layout.predict(path, **kwargs)) if self.needs_layout else None
+                    if ocr is None:
+                        # Only geometry is needed to normalize layout; no OCR model runs.
+                        ocr = {"source_path": str(path), "pages": [{"page_number": 1,
+                            "width": layout["width"], "height": layout["height"],
+                            "coordinate_space": "input_image_pixels", "lines": []}]}
+                    if layout is None:
+                        page = ocr["pages"][0]
+                        layout = {"image": str(path), "width": page["width"], "height": page["height"], "detections": []}
                     representation = self._stage(stages, "fusion", None, lambda: self.fusion.fuse(ocr, layout))
                     record["fusion"] = representation
                 if self.config.model_type == "qwen":
@@ -187,7 +214,8 @@ class InferencePipeline:
                     )
                     diagnostics.pop("prediction_path", None)
                     if representation is not None:
-                        diagnostics["input_mode"] = "fusion"
+                        if self.config.mode != "hybrid":
+                            diagnostics["input_mode"] = "fusion"
                         diagnostics.pop("ocr_text_path", None)
                         diagnostics["image_path"] = str(path)
                     record["generation"] = diagnostics
@@ -204,7 +232,7 @@ class InferencePipeline:
                                   generation={**result, "schema_errors": errors})
             except Exception as exc:
                 record.update(status="inference_error", error=f"{type(exc).__name__}: {exc}")
-        attach_framework_peaks(tracker.metrics, stages, parser=self.config.mode == "parser")
+        attach_framework_peaks(tracker.metrics, stages, parser=self.config.mode in {"parser", "hybrid"})
         record.update(tracker.metrics)
         return record
 

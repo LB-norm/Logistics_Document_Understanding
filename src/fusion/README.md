@@ -1,5 +1,13 @@
 # OCR and YOLO layout fusion
 
+To pair compact hard-fusion evidence with original full-page images, run
+`python -m src.fusion.hybrid_sft`. See the
+[hybrid campaign](../../experiments/qwen/hybrid/README.md) for dataset checks,
+training-only parser dropout, the four experiment configs, and inference.
+For stage-one input ablations, add `--evidence-modes ocr layout hard` and a new
+`--output-dir`. See the [NF4 input comparison](../../experiments/qwen/input_comparison/README.md)
+for the current three-entry queue and the exact evidence included in each mode.
+
 Build a JSON intermediate representation from the saved PP-OCR document and YOLO
 layout predictions. This stage uses only the Python standard library: it does not
 load models, run OCR/detection, or call an LLM. Python 3.10+ is sufficient.

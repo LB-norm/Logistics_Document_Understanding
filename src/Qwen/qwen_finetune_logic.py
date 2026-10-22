@@ -35,9 +35,13 @@ DEFAULT_ANNOTATION_TARGET_KEY = "content"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.Qwen.prompts import DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT
+from src.Qwen.prompts import (
+    DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT, HYBRID_REPRESENTATION,
+    HYBRID_EVIDENCE_MARKER, HYBRID_EVIDENCE_MODES, build_hybrid_messages, omit_parser_evidence,
+)
 from src.Qwen.experiment_config import load_experiment_config
 from src.eval_suite import JsonEvaluator
+from src.eval_suite.schema import validate_json_schema
 from src.utils.image_resolution import (
     DEFAULT_IMAGE_RESOLUTION,
     IMAGE_RESOLUTION_CHOICES,
@@ -88,10 +92,14 @@ def parse_args(
     )
     parser.add_argument(
         "--input-mode",
-        choices=["image", "text"],
+        choices=["image", "text", "hybrid"],
         default="image",
-        help="image: existing VLM training; text: conversations such as fused OCR/layout evidence, without pixels.",
+        help="image: VLM training; text: OCR/layout without pixels; hybrid: full-page image plus compact parser evidence.",
     )
+    parser.add_argument("--parser-dropout", type=float, default=0.0,
+                        help="Hybrid training only: probability of omitting parser evidence while retaining the image. Never applied to validation.")
+    parser.add_argument("--check-multimodal-lengths", action="store_true",
+                        help="Check complete hybrid image+prompt+answer token lengths without loading model weights (also with --dry-run).")
     parser.add_argument(
         "--train-file",
         default="train.jsonl",
@@ -784,6 +792,18 @@ def build_example_record(
             raise ValueError(f"Example {example['id']!r}: target differs from the assistant answer.")
         if "fusion_mode" in raw_record:
             example["fusion_mode"] = raw_record["fusion_mode"]
+    if input_mode == "hybrid":
+        if raw_record.get("representation") != HYBRID_REPRESENTATION or len(image_paths) != 1:
+            raise ValueError("Hybrid training requires prepared hybrid records with one source image.")
+        if raw_record.get("fusion_mode") != "hard":
+            raise ValueError("This hybrid campaign requires hard fusion.")
+        omit_parser_evidence(messages)  # Validate the removable evidence boundary.
+        if extract_assistant_target(example) != raw_record.get("target"):
+            raise ValueError("Hybrid assistant answer differs from target.")
+        evidence_mode = raw_record.get("evidence_mode", "hard")
+        if evidence_mode not in HYBRID_EVIDENCE_MODES:
+            raise ValueError("Hybrid evidence mode must be ocr, layout, or hard")
+        example.update(fusion_mode="hard", representation=HYBRID_REPRESENTATION, evidence_mode=evidence_mode)
     return example
 
 
@@ -909,7 +929,7 @@ def load_dataset_splits(
         validation_file = resolve_dataset_file(dataset_root, validation_name)
         train_examples = load_split(train_file, dataset_root, args.input_mode)
         validation_examples = load_split(validation_file, dataset_root, args.input_mode)
-        source_layout = "text_jsonl" if args.input_mode == "text" else "qwen_jsonl"
+        source_layout = {"text": "text_jsonl", "hybrid": "hybrid_jsonl"}.get(args.input_mode, "qwen_jsonl")
         train_source = str(train_file)
         validation_source = str(validation_file)
 
@@ -920,13 +940,19 @@ def load_dataset_splits(
         raise ValueError("Training split did not contain any examples.")
     if not validation_examples:
         raise ValueError("Validation split did not contain any examples.")
-    if args.input_mode == "text":
+    if args.input_mode in {"text", "hybrid"}:
         identifiers = [e["id"] for e in [*train_examples, *validation_examples] if e["id"] is not None]
         if len(identifiers) != len(set(identifiers)):
-            raise ValueError("Text training sample IDs must be unique across train and validation.")
+            raise ValueError("Conversation sample IDs must be unique across train and validation.")
         fusion_modes = {e.get("fusion_mode") for e in [*train_examples, *validation_examples]}
         if len(fusion_modes) > 1:
             raise ValueError("Train and validation must use the same fusion mode; run each strategy separately.")
+    if args.input_mode == "hybrid":
+        if len({e["evidence_mode"] for e in [*train_examples, *validation_examples]}) != 1:
+            raise ValueError("Train and validation must use the same hybrid evidence mode")
+        paths = [e["image_paths"][0] for e in [*train_examples, *validation_examples]]
+        if len(set(paths)) != len(paths):
+            raise ValueError("Hybrid images must be unique across train and validation.")
 
     return train_examples, validation_examples, str(dataset_root), train_source, validation_source, source_layout
 
@@ -1093,6 +1119,7 @@ class QwenVisionDataCollator:
     max_length: int | None
     image_token_ids: set[int]
     ignore_index: int = -100
+    context_limit: int | None = None
 
     def _load_images(self, image_paths: list[str]) -> list[Any]:
         images: list[Any] = []
@@ -1120,13 +1147,19 @@ class QwenVisionDataCollator:
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
         images_per_example = [self._load_images(feature["image_paths"]) for feature in features]
-        full_texts = [
-            apply_chat_template_safely(self.processor, feature["messages"], add_generation_prompt=False)
+        messages = [
+            omit_parser_evidence(feature["messages"])
+            if feature.get("parser_dropout", 0.0) > 0 and random.random() < feature["parser_dropout"]
+            else feature["messages"]
             for feature in features
         ]
+        full_texts = [
+            apply_chat_template_safely(self.processor, conversation, add_generation_prompt=False)
+            for conversation in messages
+        ]
         prompt_texts = [
-            apply_chat_template_safely(self.processor, feature["messages"][:-1], add_generation_prompt=True)
-            for feature in features
+            apply_chat_template_safely(self.processor, conversation[:-1], add_generation_prompt=True)
+            for conversation in messages
         ]
 
         batch = self.processor(**self._processor_kwargs(full_texts, images_per_example))
@@ -1137,7 +1170,16 @@ class QwenVisionDataCollator:
 
         prompt_lengths = prompt_batch["attention_mask"].sum(dim=1).tolist()
         for row_index, prompt_length in enumerate(prompt_lengths):
-            labels[row_index, :prompt_length] = self.ignore_index
+            length = int(batch["attention_mask"][row_index].sum())
+            if self.context_limit is not None and length > self.context_limit:
+                raise ValueError(f"Hybrid example {features[row_index].get('id')} needs {length} tokens, exceeding context limit {self.context_limit}. No truncation is allowed.")
+            if self.context_limit is not None:
+                full_ids = batch["input_ids"][row_index][batch["attention_mask"][row_index].bool()].tolist()
+                prompt_ids = prompt_batch["input_ids"][row_index][prompt_batch["attention_mask"][row_index].bool()].tolist()
+                if not prompt_ids or full_ids[:len(prompt_ids)] != prompt_ids:
+                    raise ValueError("Hybrid generation prompt must be an exact token prefix of the conversation.")
+            offset = labels.shape[1] - length if self.processor.tokenizer.padding_side == "left" else 0
+            labels[row_index, offset:offset + prompt_length] = self.ignore_index
 
         for token_id in self.image_token_ids:
             labels[labels == token_id] = self.ignore_index
@@ -1150,6 +1192,63 @@ class QwenVisionDataCollator:
 
         batch["labels"] = labels
         return batch
+
+
+def hybrid_dataset_contract(args: argparse.Namespace, examples: list[dict[str, Any]]) -> dict[str, Any]:
+    """Validate the saved prompt contract, all evidence boundaries, and target schemas."""
+    root = args.dataset_root.resolve()
+    summary = load_json(root / "preparation_summary.json")
+    if summary.get("representation") != HYBRID_REPRESENTATION:
+        raise ValueError("Expected a prepared hybrid dataset summary.")
+    schema, template = load_json(root / "schema.json"), load_json(root / "template.json")
+    if load_json(args.schema_path.resolve()) != schema:
+        raise ValueError("--schema-path differs from the hybrid dataset schema.")
+    contract = {key: summary[key] for key in ("representation", "fusion_mode", "decimals", "system_prompt", "user_prompt")}
+    contract["evidence_mode"] = examples[0].get("evidence_mode", "hard")
+    if contract["evidence_mode"] not in summary.get("evidence_modes", ["hard"]):
+        raise ValueError("Hybrid evidence mode is not declared in the dataset summary")
+    contract.update(format_version=1, schema=schema, template=template)
+    for example in examples:
+        blocks = [b["text"] for m in example["messages"] if m["role"] == "user"
+                  for b in m["content"] if b.get("type") == "text" and b["text"].startswith(HYBRID_EVIDENCE_MARKER)]
+        evidence = json.loads(blocks[0][len(HYBRID_EVIDENCE_MARKER):])
+        if evidence.get("mode") != contract["evidence_mode"] or len(evidence["pages"]) != 1:
+            raise ValueError("Hybrid evidence must contain one page of the selected evidence mode.")
+        expected = build_hybrid_messages(contract["system_prompt"], contract["user_prompt"], evidence,
+                                         template, schema, compact=True, evidence_mode=contract["evidence_mode"])
+        if example["messages"][:-1] != expected:
+            raise ValueError(f"Hybrid prompt contract mismatch for {example.get('id')}")
+        errors = validate_json_schema(extract_assistant_target(example), schema)
+        if errors:
+            raise ValueError(f"Invalid hybrid target {example.get('id')}: {errors}")
+    return contract
+
+
+def check_hybrid_sequence_lengths(processor: Any, model_config: Any,
+                                  train_examples: list[dict[str, Any]],
+                                  validation_examples: list[dict[str, Any]],
+                                  max_length: int | None) -> dict[str, Any]:
+    """Process complete images and answers before loading model weights; never truncate."""
+    from PIL import Image
+
+    limits = text_context_limits(processor, model_config, max_length)
+    limit = min(limits.values())
+    collator = QwenVisionDataCollator(processor, Image, None, set(), context_limit=limit)
+    summary = {"limits": limits, "effective_max_length": limit, "splits": {}}
+    for name, examples in (("train", train_examples), ("validation", validation_examples)):
+        lengths = []
+        for example in examples:
+            batch = collator([example])
+            length = int(batch["attention_mask"].sum())
+            supervised = int((batch["labels"] != -100).sum())
+            lengths.append({"id": example.get("id"), "conversation_tokens": length,
+                            "prompt_tokens": length - supervised, "answer_tokens": supervised})
+            example["multimodal_context_limit"] = limit
+        totals = [item["conversation_tokens"] for item in lengths]
+        summary["splits"][name] = {"examples": len(lengths), "min_tokens": min(totals),
+                                    "mean_tokens": round(sum(totals) / len(totals), 2),
+                                    "max_tokens": max(totals), "samples": lengths}
+    return summary
 
 
 def select_validation_preview_examples(
@@ -1307,8 +1406,9 @@ def generate_validation_preview_sample(
         "num_beams": 1,
         "use_cache": True,
     }
-    if not images and example.get("text_context_limit") is not None:
-        remaining = example["text_context_limit"] - prompt_tokens
+    context_limit = example.get("multimodal_context_limit") if images else example.get("text_context_limit")
+    if context_limit is not None:
+        remaining = context_limit - prompt_tokens
         if remaining < 1:
             raise ValueError("Validation prompt leaves no context space for generation.")
         generation_kwargs["max_new_tokens"] = min(max_new_tokens, remaining)
@@ -1352,7 +1452,7 @@ def generate_validation_preview_sample(
     return {
         "id": example.get("id"),
         "image_paths": example["image_paths"],
-        "input_mode": "image" if images else "text",
+        "input_mode": "hybrid" if example.get("representation") == HYBRID_REPRESENTATION else "image" if images else "text",
         "annotation_path": example.get("annotation_path"),
         "ground_truth": ground_truth,
         "prediction": prediction,
@@ -1633,8 +1733,14 @@ def parse_vision_module_names(raw_value: str) -> list[str]:
 
 
 def validate_training_options(args: argparse.Namespace) -> None:
-    if args.input_mode not in {"image", "text"}:
-        raise ValueError("--input-mode must be image or text.")
+    if args.input_mode not in {"image", "text", "hybrid"}:
+        raise ValueError("--input-mode must be image, text, or hybrid.")
+    if not 0 <= args.parser_dropout <= 1:
+        raise ValueError("--parser-dropout must be between 0 and 1.")
+    if args.parser_dropout and args.input_mode != "hybrid":
+        raise ValueError("--parser-dropout requires --input-mode hybrid.")
+    if args.check_multimodal_lengths and args.input_mode != "hybrid":
+        raise ValueError("--check-multimodal-lengths requires --input-mode hybrid.")
     if args.check_text_lengths and args.input_mode != "text":
         raise ValueError("--check-text-lengths requires --input-mode text.")
     if args.loss_implementation not in {"standard", "chunked"}:
@@ -2121,7 +2227,7 @@ def build_processor_load_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"local_files_only": args.local_files_only}
     if args.cache_dir is not None:
         kwargs["cache_dir"] = str(args.cache_dir)
-    if args.input_mode == "image":
+    if args.input_mode != "text":
         kwargs["max_pixels"] = max_pixels_for_resolution(args.resolution)
     return kwargs
 
@@ -2361,6 +2467,14 @@ def main(
 
     text_processor = None
     text_train_data = text_validation_data = text_length_summary = None
+    hybrid_contract = None
+    multimodal_length_summary = None
+    if args.input_mode == "hybrid":
+        hybrid_contract = hybrid_dataset_contract(args, [*train_examples, *validation_examples])
+        if not args.dry_run or args.check_multimodal_lengths:
+            text_processor, model_config = load_text_tokenization_resources(args)
+            multimodal_length_summary = check_hybrid_sequence_lengths(
+                text_processor, model_config, train_examples, validation_examples, args.max_length)
     if args.input_mode == "text" and (not args.dry_run or args.check_text_lengths):
         text_processor, model_config = load_text_tokenization_resources(args)
         text_train_data, text_validation_data, text_length_summary = prepare_text_training_data(
@@ -2378,8 +2492,14 @@ def main(
             args=args,
         )
         print(f"  model_id: {args.model_id}")
-        if args.input_mode == "image":
+        if args.input_mode != "text":
             print(f"  resolution: {args.resolution} ({max_pixels_for_resolution(args.resolution):,} max pixels)")
+            if args.input_mode == "hybrid":
+                print(f"  parser_dropout: {args.parser_dropout} (training only)")
+                if multimodal_length_summary is None:
+                    print("  token_lengths: not checked; add --check-multimodal-lengths to process images without model weights")
+                else:
+                    print(json.dumps(multimodal_length_summary, indent=2))
         else:
             if text_length_summary is not None:
                 print_text_length_summary(text_length_summary)
@@ -2423,6 +2543,10 @@ def main(
     )
     args.output_dir = run_context.output_dir
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if hybrid_contract is not None:
+        write_json(args.output_dir / "hybrid_contract.json", hybrid_contract)
+    if multimodal_length_summary is not None:
+        write_json(args.output_dir / "multimodal_sequence_lengths.json", multimodal_length_summary)
     if text_length_summary is not None:
         write_json(args.output_dir / "text_sequence_lengths.json", text_length_summary)
         print_text_length_summary(text_length_summary)
@@ -2480,7 +2604,7 @@ def main(
             load_in_8bit=args.load_in_8bit,
             use_peft=use_peft,
             require_bitsandbytes="8bit" in resolve_optimizer(args, load_in_4bit),
-            require_images=args.input_mode == "image",
+            require_images=args.input_mode != "text",
         )
         LoraConfig, get_peft_model, prepare_model_for_kbit_training = peft_fns
         vram_tracker = PeakVramTracker(torch, args.output_dir)
@@ -2598,11 +2722,18 @@ def main(
             validation_dataset = Dataset.from_list(text_validation_data)
             data_collator = QwenTextDataCollator(tokenizer=processor.tokenizer)
         else:
-            train_dataset = Dataset.from_list(train_examples)
+            # Only training records carry dropout metadata. The same collator sees
+            # clean validation records during Trainer.evaluate and best selection.
+            train_records = ([{**row, "parser_dropout": args.parser_dropout} for row in train_examples]
+                             if args.input_mode == "hybrid" else train_examples)
+            train_dataset = Dataset.from_list(train_records)
             validation_dataset = Dataset.from_list(validation_examples)
             data_collator = QwenVisionDataCollator(
-                processor=processor, image_module=image_module, max_length=args.max_length,
+                processor=processor, image_module=image_module,
+                max_length=None if args.input_mode == "hybrid" else args.max_length,
                 image_token_ids=image_token_ids,
+                context_limit=(multimodal_length_summary["effective_max_length"]
+                               if multimodal_length_summary is not None else None),
             )
         callbacks = []
         if validation_preview_examples:
@@ -2697,12 +2828,19 @@ def main(
                 output_dir=args.output_dir,
             )
 
+        if hybrid_contract is not None:
+            # A retained adapter remains usable after moving it away from the dataset/run.
+            for key in ("best_model_dir", "last_model_dir"):
+                if checkpoint_artifacts.get(key):
+                    write_json(Path(checkpoint_artifacts[key]) / "hybrid_contract.json", hybrid_contract)
+
         resolved_config = namespace_to_dict(args)
         resolved_config.update(
             {
                 "resolution_max_pixels": (max_pixels_for_resolution(args.resolution)
-                                          if args.input_mode == "image" else None),
+                                          if args.input_mode != "text" else None),
                 "text_sequence_lengths": text_length_summary,
+                "multimodal_sequence_lengths": multimodal_length_summary,
                 "resolved_dataset_root": resolved_dataset_root,
                 "source_layout": source_layout,
                 "train_source": train_source,

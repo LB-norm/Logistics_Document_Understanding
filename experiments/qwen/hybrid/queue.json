@@ -1,0 +1,11 @@
+{
+  "format_version": 1,
+  "name": "qwen35-9b-hybrid",
+  "description": "Four independent hybrid runs: frozen/LoRA vision and merger crossed with 0/20% parser dropout.",
+  "experiments": [
+    "h1_frozen.json",
+    "h2_adapted.json",
+    "h3_frozen_dropout20.json",
+    "h4_adapted_dropout20.json"
+  ]
+}

@@ -12,7 +12,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.Qwen.prompts import DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT, build_fusion_messages, build_ocr_messages
+from src.Qwen.prompts import (
+    DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT, HYBRID_REPRESENTATION, HYBRID_EVIDENCE_MODES,
+    build_fusion_messages, build_ocr_messages, build_hybrid_messages,
+)
 from src.eval_suite.schema import validate_json_schema
 from src.utils.inference_tracking import InferenceTracker
 from src.utils.image_resolution import (
@@ -97,6 +100,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "JSON file is written per image."
         ),
     )
+    parser.add_argument("--hybrid", action="store_true",
+                        help="Use the shared image + compact OCR/layout prompt contract.")
+    parser.add_argument("--hybrid-evidence", choices=HYBRID_EVIDENCE_MODES, default=None,
+                        help="Evidence ablation: OCR lines, detected layout regions, or hard fusion. Defaults to the saved contract, then hard.")
+    parser.add_argument("--fusion-json-paths", type=Path, nargs="+",
+                        help="Saved full fusion JSON files, paired in order with explicit image paths; requires --hybrid.")
+    parser.add_argument("--hybrid-contract", type=Path,
+                        help="Saved hybrid_contract.json; automatically discovered inside a hybrid adapter directory.")
+    parser.add_argument("--fusion-decimals", type=int, default=4,
+                        help="Compact evidence rounding when no saved hybrid contract is available.")
+    parser.add_argument("--omit-parser-evidence", action="store_true",
+                        help="Hybrid diagnostic: retain the image but omit parser evidence from Qwen's prompt.")
     parser.add_argument(
         "--model-id",
         default=None,
@@ -219,7 +234,57 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Optional Hugging Face cache directory.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.fusion_json_paths and (not args.hybrid or args.ocr_text_paths or not (args.image_path or args.image_paths)):
+        parser.error("--fusion-json-paths requires --hybrid and explicit image inputs")
+    if args.fusion_json_paths and len(args.fusion_json_paths) != len(args.image_paths or [args.image_path]):
+        parser.error("Supply exactly one fusion JSON file per image, in matching order")
+    if args.hybrid and args.ocr_text_paths:
+        parser.error("--hybrid requires image inputs, not --ocr-text-paths")
+    if args.omit_parser_evidence and not args.hybrid:
+        parser.error("--omit-parser-evidence requires --hybrid")
+    if args.hybrid_contract and not args.hybrid:
+        parser.error("--hybrid-contract requires --hybrid")
+    if args.hybrid_evidence is not None and not args.hybrid:
+        parser.error("--hybrid-evidence requires --hybrid")
+    if not 0 <= args.fusion_decimals <= 10:
+        parser.error("--fusion-decimals must be between 0 and 10")
+    return args
+
+
+def load_hybrid_contract(args: argparse.Namespace) -> dict[str, Any] | None:
+    """Use the adapter's training contract without depending on its original dataset."""
+    if not args.hybrid:
+        return None
+    path = args.hybrid_contract
+    if path is None:
+        candidate = args.adapter_path or (Path(args.model_id) if args.model_id else None)
+        if candidate is not None and (candidate / "hybrid_contract.json").is_file():
+            path = candidate / "hybrid_contract.json"
+    if path is None:
+        return None
+    contract = load_json(path)
+    if contract.get("format_version") != 1 or contract.get("representation") != HYBRID_REPRESENTATION:
+        raise ValueError(f"Unsupported hybrid prompt contract: {path}")
+    if contract.get("fusion_mode") != "hard":
+        raise ValueError("This hybrid campaign requires hard fusion.")
+    evidence_mode = contract.get("evidence_mode", "hard")
+    if evidence_mode not in HYBRID_EVIDENCE_MODES:
+        raise ValueError("Unsupported saved hybrid evidence mode")
+    if args.hybrid_evidence is not None and args.hybrid_evidence != evidence_mode:
+        raise ValueError("--hybrid-evidence differs from the adapter's training contract")
+    if not isinstance(contract.get("decimals"), int) or not 0 <= contract["decimals"] <= 10:
+        raise ValueError("Invalid hybrid rounding precision.")
+    for key in ("system_prompt", "user_prompt", "schema", "template"):
+        if key not in contract:
+            raise ValueError(f"Hybrid contract is missing {key}")
+    if any(not isinstance(contract[key], str) or not contract[key].strip()
+           for key in ("system_prompt", "user_prompt")):
+        raise ValueError("Hybrid contract prompts must be nonempty strings.")
+    errors = validate_json_schema(contract["template"], contract["schema"])
+    if errors:
+        raise ValueError("Hybrid template does not satisfy its schema: " + "; ".join(errors))
+    return contract
 
 
 def load_json(path: Path) -> Any:
@@ -660,8 +725,25 @@ def generate_image_prediction(
     )
     inference_device = None if uses_cuda_map else get_model_device(runtime.model)
     with InferenceTracker(runtime.torch, device=inference_device) as tracker:
-        text_only = fusion_document is not None or bool(args.ocr_text_paths)
-        if fusion_document is not None:
+        hybrid = args.hybrid
+        text_only = not hybrid and (fusion_document is not None or bool(args.ocr_text_paths))
+        if hybrid:
+            contract = load_hybrid_contract(args)
+            if contract is not None:
+                template, target_schema = contract["template"], contract["schema"]
+            if fusion_document is None and not args.omit_parser_evidence:
+                raise ValueError("Hybrid inference requires fusion evidence, or --omit-parser-evidence for an image-only diagnostic.")
+            if fusion_document is not None and fusion_document.get("mode") != "hard":
+                raise ValueError("Hybrid inference requires hard fusion evidence.")
+            image = load_image(image_path, runtime.image_module)
+            messages = build_hybrid_messages(
+                contract["system_prompt"] if contract else args.system_prompt,
+                contract["user_prompt"] if contract else args.user_prompt,
+                None if args.omit_parser_evidence else fusion_document, template, target_schema,
+                decimals=contract["decimals"] if contract else args.fusion_decimals,
+                evidence_mode=contract.get("evidence_mode", "hard") if contract else args.hybrid_evidence or "hard",
+            )
+        elif fusion_document is not None:
             messages = build_fusion_messages(
                 args.system_prompt, args.user_prompt, fusion_document, template, target_schema,
             )
@@ -684,6 +766,16 @@ def generate_image_prediction(
             )
         inputs = move_batch_to_device(inputs, get_model_device(runtime.model))
 
+        if hybrid:
+            from src.Qwen.qwen_finetune_logic import text_context_limits
+            limits = text_context_limits(runtime.processor, runtime.model.config, None)
+            remaining = min(limits.values()) - int(inputs["input_ids"].shape[-1])
+            if remaining < 1:
+                raise ValueError("Hybrid prompt leaves no context space for generation.")
+            generation_budget = min(args.max_new_tokens, remaining)
+        else:
+            generation_budget = args.max_new_tokens
+
         notes: list[str] = []
         if args.adapter_path is None:
             notes.append(
@@ -694,7 +786,7 @@ def generate_image_prediction(
         with runtime.torch.inference_mode():
             outputs = runtime.model.generate(
                 **inputs,
-                max_new_tokens=args.max_new_tokens,
+                max_new_tokens=generation_budget,
                 do_sample=False,
                 use_cache=True,
             )
@@ -856,7 +948,9 @@ def build_diagnostic_record(
         "inference_seconds": result.inference_seconds,
         "vram": result.vram,
         "status": result_status(result, template),
-        "input_mode": "ocr_text" if args.ocr_text_paths else "image",
+        "input_mode": ("hybrid_image_only" if args.omit_parser_evidence else "hybrid") if args.hybrid else "ocr_text" if args.ocr_text_paths else "image",
+        **({"parser_evidence_supplied": not args.omit_parser_evidence} if args.hybrid else {}),
+        **({"evidence_mode": (load_hybrid_contract(args) or {}).get("evidence_mode", args.hybrid_evidence or "hard")} if args.hybrid else {}),
         "ocr_text_path" if args.ocr_text_paths else "image_path": str(result.image_path),
         "prediction_path": str(output_path),
         "model": {
@@ -908,10 +1002,12 @@ def run_inference_on_images(
     target_schema: Any,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for image_path, prediction_path in zip(image_paths, prediction_paths, strict=True):
+    for index, (image_path, prediction_path) in enumerate(zip(image_paths, prediction_paths, strict=True)):
         try:
+            evidence = load_json(args.fusion_json_paths[index]) if args.fusion_json_paths else None
             result = generate_image_prediction(
-                runtime, image_path, template, target_schema, args
+                runtime, image_path, template, target_schema, args,
+                **({"fusion_document": evidence} if evidence is not None else {}),
             )
             write_json(prediction_path, result.prediction)
             record = build_diagnostic_record(
@@ -925,7 +1021,7 @@ def run_inference_on_images(
         except Exception as exc:
             record = {
                 "status": "inference_error",
-                "input_mode": "ocr_text" if args.ocr_text_paths else "image",
+                "input_mode": "hybrid" if args.hybrid else "ocr_text" if args.ocr_text_paths else "image",
                 "ocr_text_path" if args.ocr_text_paths else "image_path": str(image_path),
                 "prediction_path": None,
                 "model": {
@@ -951,27 +1047,27 @@ def run_inference_on_images(
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     image_paths = resolve_image_paths(args)
+    contract = load_hybrid_contract(args)
 
     missing_images = [path for path in image_paths if not path.is_file()]
     if missing_images:
         for image_path in missing_images:
             print(f"Input file not found: {image_path}", file=sys.stderr)
         return 1
-    if not args.schema_path.is_file():
+    if contract is None and not args.schema_path.is_file():
         print(f"Schema file not found: {args.schema_path}", file=sys.stderr)
         return 1
-    if not args.template_path.is_file():
+    if contract is None and not args.template_path.is_file():
         print(f"Template file not found: {args.template_path}", file=sys.stderr)
         return 1
     if args.adapter_path is not None and not args.adapter_path.is_dir():
         print(f"Adapter directory not found: {args.adapter_path}", file=sys.stderr)
         return 1
 
-    schema = load_json(args.schema_path)
-    template = extract_json_target(
-        load_json(args.template_path), args.annotation_target_key
-    )
-    target_schema = select_schema_node_for_target(schema, args.annotation_target_key)
+    schema = contract["schema"] if contract else load_json(args.schema_path)
+    template = contract["template"] if contract else extract_json_target(
+        load_json(args.template_path), args.annotation_target_key)
+    target_schema = schema if contract else select_schema_node_for_target(schema, args.annotation_target_key)
     template_schema_errors = validate_json_schema(template, target_schema)
     if template_schema_errors:
         print(

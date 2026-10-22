@@ -10,6 +10,7 @@ their respective modules.
 | --- | --- | --- |
 | `end-to-end` | Qwen base model, Qwen fine-tuned adapter/merged checkpoint, or Donut checkpoint | Image → existing model inference → content JSON |
 | `parser` | Qwen base model or fine-tuned downstream Qwen checkpoint/adapter, plus YOLO weights and fusion mode | Image → PP-OCR + YOLO → fusion → text-only Qwen generation → content JSON |
+| `hybrid` | Hybrid Qwen adapter/checkpoint plus YOLO weights | Image → PP-OCR + YOLO → compact hard fusion + full image → Qwen generation → content JSON |
 
 Choose models using a Hugging Face ID or local path. Qwen adapter directories can
 be selected with `--adapter-path` or supplied directly as `--model-id`; the native
@@ -201,3 +202,11 @@ so they run without downloading weights:
 python -m unittest discover -s tests -p 'test_inference_pipeline.py' -v
 python -m unittest discover -s tests -p 'test_inference_tracking.py' -v
 ```
+## Hybrid image + parser inference
+
+`--mode hybrid` runs OCR → YOLO → hard fusion, then supplies Qwen with both the
+full-page image and compact parser evidence. It defaults to hard fusion. A retained
+hybrid adapter's `hybrid_contract.json` automatically supplies the training prompt,
+schema, skeleton and rounding precision. See the
+[hybrid campaign](../../experiments/qwen/hybrid/README.md) for commands and the
+validation/test launcher. Existing `end-to-end` and `parser` modes remain available.

@@ -12,6 +12,7 @@ documents. The current dataset and schema cover CMR documents and German deliver
 | Qwen | Adapter/full fine-tuning from images or OCR/layout text conversations | [Qwen](src/Qwen/README.md) |
 | PP-OCRv6 | Reusable OCR with coordinates and train/val OCR dataset preparation | [OCR baseline](src/PP_parser/README.md) |
 | OCR/layout fusion | Separate, hard, or soft geometric representations and batch text-only SFT preparation | [Fusion](src/fusion/README.md) |
+| Hybrid Qwen | Full-page image + OCR, layout, or hard fusion; stage-one input comparison | [Three-run input comparison](experiments/qwen/input_comparison/README.md) |
 | PaddleOCR-VL | Inference and ERNIEKit data preparation | [PaddleOCR-VL](src/PP_parser/README.md) |
 | Conditional DETR | COCO document region detection and fine-tuning | [Conditional DETR](src/conditional_detr/README.md) |
 | YOLO11s | COCO document region detection with matching prediction/review output | [YOLO11s](src/yolo_v11s/README.md) |

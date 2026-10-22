@@ -17,7 +17,7 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, P
         "for example --resolution high or --max-new-tokens 4096 for Qwen, "
         "or --task-prompt '<s_lieferschein>' for Donut. Use --model-help to list them."
     ))
-    parser.add_argument("--mode", choices=["end-to-end", "parser"], required=True)
+    parser.add_argument("--mode", choices=["end-to-end", "parser", "hybrid"], required=True)
     parser.add_argument("--model-type", choices=["qwen", "donut"], default="qwen")
     parser.add_argument("--model-id", help="Base/merged model ID or local checkpoint; Qwen adapter directories are recognized")
     parser.add_argument("--adapter-path", type=Path, help="Qwen LoRA adapter; its metadata can select the base model")
@@ -83,17 +83,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             if path.suffix.lower() == ".pdf":
                 raise ValueError("Render PDFs to page images before inference")
         pipeline = InferencePipeline(config)
-        if config.mode == "parser":
+        if pipeline.needs_layout:
             weights = config.yolo_model_dir
             weights = weights / "model.pt" if weights.is_dir() else weights
             if not weights.is_file() or not (weights.parent / "layout_config.json").is_file():
                 raise ValueError("YOLO requires weights and their adjacent layout_config.json")
-        for path in (config.ocr_config.text_detection_model_dir, config.ocr_config.text_recognition_model_dir):
+        for path in ((config.ocr_config.text_detection_model_dir, config.ocr_config.text_recognition_model_dir) if pipeline.needs_ocr else ()):
             if path is not None and not Path(path).is_dir():
                 raise FileNotFoundError(path)
         manifest_path = args.output_dir / "inference_manifest.jsonl"
         destinations = [manifest_path] + [args.output_dir / f"{path.stem}.json" for path in args.images]
-        if config.mode == "parser":
+        if config.mode in {"parser", "hybrid"}:
             destinations.extend(args.output_dir / f"{path.stem}.fusion.json" for path in args.images)
         resolved = [path.resolve() for path in destinations]
         protected = {path.resolve() for path in args.images}
