@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "name": "qwen35-9b-hybrid-input-ocr-nf4-r16",
-  "description": "Stage 1 input ablation: ocr evidence + full-page image; matches the 9B NF4 QLoRA image baseline with frozen vision and merger; no modality dropout.",
+  "name": "qwen35-9b-hybrid-input-ocr-nf4-r16-chunked",
+  "description": "Stage 1 OCR + image rerun with checkpointed answer-position loss (256 positions per chunk); original NF4 QLoRA recipe, complete inputs and frozen vision; no modality dropout.",
   "training": {
     "model_id": "Qwen/Qwen3.5-9B",
     "model_class": "auto",
@@ -35,7 +35,8 @@
     "seed": 42,
     "dataset_root": "data/datasets/250_CMRS_240dpi_20260707/fusion_sft_input_comparison",
     "input_mode": "hybrid",
-    "loss_implementation": "standard",
+    "loss_implementation": "chunked",
+    "loss_chunk_size": 256,
     "load_in_8bit": false,
     "no_bnb_double_quant": false,
     "max_length": null,

@@ -1,10 +1,9 @@
 {
   "format_version": 1,
   "name": "qwen35-9b-input-comparison",
-  "description": "Stage 1: OCR + image, layout + image, hard-fusion + image, all using the same frozen-vision NF4 QLoRA recipe. Existing image-only NF4 run is the external baseline. No dropout or image masking.",
+  "description": "Stage 1 reruns: OCR + image, then hard-fusion + image, using checkpointed answer-position loss (256 positions per chunk) with the original frozen-vision NF4 QLoRA recipe and complete inputs. Layout + image completed successfully and is excluded. Existing image-only NF4 run is the external baseline. No dropout or image masking.",
   "experiments": [
     "ocr_image_nf4_qlora_r16.json",
-    "layout_image_nf4_qlora_r16.json",
     "hard_image_nf4_qlora_r16.json"
   ]
 }

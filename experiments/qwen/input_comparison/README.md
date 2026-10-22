@@ -1,14 +1,17 @@
 # Stage 1: image + OCR/layout input comparison
 
-This queue has exactly three independent runs. The existing 9B image-only NF4
-QLoRA run is the external baseline; it is not queued again or used to initialize
-the new adapters. All three start from `Qwen/Qwen3.5-9B`.
+The current queue reruns **OCR + image** and **hard fusion + image** using
+checkpointed chunked loss after the standard-loss OCR run exhausted GPU memory.
+**Layout + image completed successfully and is excluded from the queue**; its
+configuration and results are retained. The existing 9B image-only NF4 QLoRA run
+remains the external baseline. Each queued run starts independently from
+`Qwen/Qwen3.5-9B`, with a new `-chunked` run name; no old adapter initializes it.
 
-| Run | Full-page image | Evidence supplied to Qwen |
+| Run | Status | Evidence supplied with the full-page image |
 | --- | --- | --- |
-| `qwen35-9b-hybrid-input-ocr-nf4-r16` | Yes | OCR text, polygons and OCR confidence only |
-| `qwen35-9b-hybrid-input-layout-nf4-r16` | Yes | Detected region labels, boxes and layout confidence only |
-| `qwen35-9b-hybrid-input-hard-nf4-r16` | Yes | Both collections plus their hard memberships |
+| `qwen35-9b-hybrid-input-ocr-nf4-r16-chunked` | Queued | OCR text, polygons and OCR confidence only |
+| `qwen35-9b-hybrid-input-layout-nf4-r16` | Completed; excluded | Detected region labels, boxes and layout confidence only |
+| `qwen35-9b-hybrid-input-hard-nf4-r16-chunked` | Queued | Both collections plus their hard memberships |
 
 OCR input includes no YOLO regions or assignments. Layout input includes no OCR
 text, OCR geometry, line IDs, or memberships. The full variant preserves unassigned
@@ -40,7 +43,7 @@ definition is [qwen35_9b_qlora_r16.json](../qwen35_9b_qlora_r16.json):
 | Weight decay / gradient clipping | 0.01 / 1.0 |
 | Attention / gradient checkpointing | SDPA / enabled |
 | Seed | 42 |
-| Loss / sequence length | Standard multimodal loss / complete inputs without truncation |
+| Loss / sequence length | Queued OCR/hard runs: chunked answer-position loss, 256 positions per chunk; complete inputs without truncation |
 | Parser dropout / image masking | Neither applied in stage one |
 
 NF4 base-weight storage and BF16 computation are separate settings. This is QLoRA
@@ -62,8 +65,31 @@ from the historical image-only prompt, so gains over that historical run are not
 a perfectly isolated causal estimate of adding parser evidence. The three new
 runs form the controlled input comparison; an additional matched image-only
 rerun could strengthen the comparison later. It is deliberately absent from this
-three-entry queue as requested. Model-only checkpoint retention is a storage
-policy change and does not alter optimizer updates.
+three-representation comparison as requested. Model-only checkpoint retention is
+a storage policy change and does not alter optimizer updates. The current rerun
+queue has two entries because layout + image is already complete.
+
+## Chunked multimodal loss
+
+The queued runs use the parser-to-LLM pipeline's existing chunked loss, extended
+to pass images, image grids, modality IDs and positional inputs through Qwen's
+native multimodal backbone. The complete image and parser sequence remain in
+the context. Only positions predicting supervised answer tokens reach the LM head;
+projection and FP32 cross-entropy run in checkpointed chunks of at most 256
+positions. Teacher-forced validation uses the same loss; unlabeled generation and
+saved-adapter inference retain Qwen's native forward.
+
+For the recorded local training inputs, OCR averages 20,809 tokens (maximum
+25,894), layout 7,485 (maximum 8,130), and hard fusion 23,610 (maximum 29,472).
+Standard loss projects all those positions into the full vocabulary even though
+prompt labels are masked. Chunking removes that vocabulary-sized memory cost for
+prompt positions. Backbone activation memory still depends on the complete input;
+peak VRAM must be measured on the training GPU.
+
+The completed layout run keeps standard loss. The chunked implementation retains
+the same full-vocabulary next-token objective, answer mask and microbatch mean;
+changed matrix shapes and reduction order can introduce small numerical differences.
+NF4, LoRA, resolution, data, schedule and effective batch size are unchanged.
 
 ## Prepare and validate
 
@@ -109,8 +135,21 @@ Unlike the previous four-run hybrid plan, these three representations have
 different lengths; check each. Processor/model configuration files must be cached
 or downloadable. Every actual training run automatically performs the same
 preflight before loading weights, rejects oversized inputs, and records
-`multimodal_sequence_lengths.json`. Standard multimodal loss still requires a
-GPU memory check; NF4 does not eliminate activation or output-logit memory.
+`multimodal_sequence_lengths.json`. Chunked loss still requires a GPU memory check;
+NF4 does not eliminate backbone activation memory. No dataset rebuild is needed
+when switching to the chunked loss.
+
+Optional loss/gradient comparison on the shortest complete multimodal example:
+
+```bash
+python src/Qwen/run_qwen_training.py \
+  --config experiments/qwen/input_comparison/ocr_image_nf4_qlora_r16.json \
+  --compare-loss --comparison-samples 1 \
+  --output-dir runs/qwen-input-comparison-loss-check
+```
+
+This diagnostic also executes standard loss, so it can itself OOM; it is not part
+of the training queue. It writes `loss_comparison.json` without optimizer updates.
 
 ## Training queue
 
@@ -120,7 +159,8 @@ bash experiments/qwen/input_comparison/run_queue.sh
 
 Runs are written to `runs/qwen-input-comparison/<run-name>/`, with an appended
 parent `queue.log`. Each experiment uses a fresh Python process. The launcher
-attempts all three even after a failure, then returns nonzero if any failed.
+attempts OCR + image and then hard fusion + image even after a failure, then
+returns nonzero if either failed. Layout + image is not launched.
 `QWEN_PYTHON` selects the interpreter and `QWEN_INPUT_RUNS_DIR` overrides the output
 root. Additional arguments are common training overrides, for example:
 
@@ -133,6 +173,8 @@ bash experiments/qwen/input_comparison/run_queue.sh \
 To start at a later entry, use Python's queue runner with `--start-at` before `--`.
 Each model retains the checkpoint with lowest epoch validation loss in
 `best_model/`. Model-only snapshots do not contain resumable optimizer state.
+Reruns use fresh `-chunked` directories under the same root, preserving the old
+failed-run logs and completed layout adapter. They restart from the base model.
 The retained adapter includes `hybrid_contract.json` recording its evidence mode,
 rounding precision, prompts, schema and skeleton. Inference selects the evidence
 mode from that contract and rejects contradictory overrides. Old hybrid contracts
@@ -170,7 +212,7 @@ Direct inference also works, for example:
 
 ```bash
 python -m src.inference_pipeline --mode hybrid \
-  --model-id runs/qwen-input-comparison/qwen35-9b-hybrid-input-ocr-nf4-r16/best_model \
+  --model-id runs/qwen-input-comparison/qwen35-9b-hybrid-input-ocr-nf4-r16-chunked/best_model \
   --load-in-4bit --resolution medium --images /path/to/page.png
 ```
 

@@ -52,6 +52,35 @@ def padded_batch():
     }
 
 
+def hybrid_batch():
+    """Two real 2x2 patch images, parser tokens, answers, and opposite padding."""
+    ids = torch.tensor([[0, 1, 29, 29, 29, 29, 2, 3, 4, 5, 6],
+                        [1, 29, 29, 29, 29, 2, 7, 8, 9, 10, 0]])
+    labels = torch.full_like(ids, -100)
+    labels[0, 9:] = ids[0, 9:]
+    labels[1, 8:10] = ids[1, 8:10]
+    return {
+        "input_ids": ids, "attention_mask": (ids != 0).long(), "labels": labels,
+        "pixel_values": torch.randn(8, 3 * 2 * 2 * 2),
+        "image_grid_thw": torch.tensor([[1, 2, 2], [1, 2, 2]]),
+        "mm_token_type_ids": (ids == 29).long(),
+    }
+
+
+def hybrid_records(batch):
+    return [{**{key: batch[key][index].tolist() for key in (
+                "input_ids", "attention_mask", "labels", "mm_token_type_ids", "image_grid_thw")},
+             "pixel_values": batch["pixel_values"][index * 4:(index + 1) * 4].tolist()}
+            for index in (0, 1)]
+
+
+def collate_hybrid(records):
+    batch = {key: torch.tensor([record[key] for record in records]) for key in (
+        "input_ids", "attention_mask", "labels", "mm_token_type_ids", "image_grid_thw")}
+    batch["pixel_values"] = torch.cat([torch.tensor(record["pixel_values"]) for record in records])
+    return batch
+
+
 class ChunkedLossTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -161,12 +190,90 @@ class ChunkedLossTests(unittest.TestCase):
                     report = compare_loss_methods(model, controller, [padded_batch()])
                     self.assertTrue(report["passed"], report)
 
-    def test_trainer_accumulation_evaluation_and_early_stop_keep_scheduler_and_updates(self):
-        for adapter in (False, True):
-            with self.subTest(adapter=adapter):
-                self.check_trainer_early_stop(adapter)
+    def test_image_parser_loss_and_gradients_with_lora_checkpointing_and_bfloat16(self):
+        from itertools import product
+        from peft import LoraConfig, get_peft_model
+        for tuning in ("frozen_vision", "lora", "trainable_vision"):
+            for dtype, reentrant in product(("float32", "bfloat16"), (True, False)):
+                with self.subTest(tuning=tuning, dtype=dtype, reentrant=reentrant):
+                    model = tiny_qwen()
+                    if tuning == "trainable_vision":
+                        model.model.visual.requires_grad_(True)
+                    elif tuning == "lora":
+                        model = get_peft_model(model, LoraConfig(
+                            task_type="CAUSAL_LM", target_modules=["q_proj", "v_proj"],
+                            r=2, lora_alpha=4, lora_dropout=0.1))
+                        for name, parameter in model.named_parameters():
+                            if "lora_B" in name:
+                                torch.nn.init.normal_(parameter, std=0.02)
+                        model.enable_input_require_grads()
+                    model.gradient_checkpointing_enable(
+                        gradient_checkpointing_kwargs={"use_reentrant": reentrant})
+                    batch = hybrid_batch()
+                    controller = ChunkedLossController(model, 1)
+                    before = {key: value.clone() for key, value in batch.items()}
+                    report = compare_loss_methods(model, controller, [batch], dtype)
+                    self.assertTrue(report["passed"], report)
+                    self.assertEqual(report["samples"][0]["supervised_tokens"], 4)
+                    for key in before:
+                        torch.testing.assert_close(batch[key], before[key], rtol=0, atol=0)
+                    model(**batch).loss.backward()
+                    visual_gradients = [p.grad for p in controller.base_model.model.visual.parameters()]
+                    if tuning == "trainable_vision":
+                        self.assertTrue(any(g is not None and g.abs().sum() > 0 for g in visual_gradients))
+                    else:
+                        self.assertTrue(all(g is None for g in visual_gradients))
 
-    def check_trainer_early_stop(self, adapter):
+    def test_hybrid_projection_is_bounded_and_image_and_parser_reach_native_backbone(self):
+        model = tiny_qwen().eval()
+        batch = hybrid_batch()
+        controller = ChunkedLossController(model, 2)
+        shapes, inputs = [], []
+        head_hook = model.lm_head.register_forward_pre_hook(lambda _, args: shapes.append(args[0].shape))
+        backbone_hook = model.model.register_forward_pre_hook(
+            lambda _, args, kwargs: inputs.append(dict(kwargs)), with_kwargs=True)
+        try:
+            with torch.no_grad():
+                baseline = model(**batch).loss
+                self.assertEqual(len(shapes), 2)
+                self.assertTrue(all(shape == (2, 16) for shape in shapes), shapes)
+                for key in ("input_ids", "pixel_values", "image_grid_thw", "mm_token_type_ids"):
+                    self.assertIs(inputs[0][key], batch[key])
+                changed_image = model(**{**batch, "pixel_values": torch.zeros_like(batch["pixel_values"])}).loss
+                changed_ids = batch["input_ids"].clone()
+                changed_ids[0, 7:9] = 12
+                changed_parser = model(**{**batch, "input_ids": changed_ids}).loss
+            self.assertNotEqual(baseline.item(), changed_image.item())
+            self.assertNotEqual(baseline.item(), changed_parser.item())
+        finally:
+            head_hook.remove()
+            backbone_hook.remove()
+
+    def test_hybrid_unlabeled_forward_and_generation_remain_native(self):
+        model = tiny_qwen().eval()
+        controller = ChunkedLossController(model, 2)
+        inputs = hybrid_batch()
+        inputs.pop("labels")
+        # Remove answer/right padding for an ordinary single-image generation prompt.
+        inputs = {key: value[:1, 1:9] if key in ("input_ids", "attention_mask", "mm_token_type_ids")
+                  else value[:4] if key == "pixel_values" else value[:1]
+                  for key, value in inputs.items()}
+        with torch.no_grad():
+            controller.enabled = False
+            expected = model(**inputs).logits
+            tokens = model.generate(**inputs, max_new_tokens=2, do_sample=False, pad_token_id=0)
+            controller.enabled = True
+            torch.testing.assert_close(model(**inputs).logits, expected, rtol=0, atol=0)
+            self.assertTrue(torch.equal(tokens, model.generate(
+                **inputs, max_new_tokens=2, do_sample=False, pad_token_id=0)))
+
+    def test_trainer_accumulation_evaluation_and_early_stop_keep_scheduler_and_updates(self):
+        for hybrid in (False, True):
+            for adapter in (False, True):
+                with self.subTest(adapter=adapter, hybrid=hybrid):
+                    self.check_trainer_early_stop(adapter, hybrid)
+
+    def check_trainer_early_stop(self, adapter, hybrid=False):
         from transformers import Trainer, TrainerCallback, TrainingArguments
         old = tiny_qwen()
         if adapter:
@@ -176,8 +283,9 @@ class ChunkedLossTests(unittest.TestCase):
                 r=2, lora_alpha=4, lora_dropout=0.1))
         new = deepcopy(old)
         ChunkedLossController(new, 2)
-        batch = padded_batch()
-        data = [{key: value[index].tolist() for key, value in batch.items()} for index in (0, 1, 0, 1)]
+        batch = hybrid_batch() if hybrid else padded_batch()
+        data = (hybrid_records(batch) * 2 if hybrid else
+                [{key: value[index].tolist() for key, value in batch.items()} for index in (0, 1, 0, 1)])
         states = []
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             for index, model in enumerate((old, new)):
@@ -191,6 +299,7 @@ class ChunkedLossTests(unittest.TestCase):
                     prediction_loss_only=True, remove_unused_columns=False,
                 )
                 trainer = Trainer(model=model, args=args, train_dataset=data, eval_dataset=data,
+                                  data_collator=collate_hybrid if hybrid else None,
                                   callbacks=[build_stop_after_steps_callback(TrainerCallback, 2)])
                 self.assertFalse(trainer.model_accepts_loss_kwargs)
                 trainer.train()
@@ -221,6 +330,10 @@ class ChunkedLossTests(unittest.TestCase):
             torch.testing.assert_close(a, b, rtol=1e-5, atol=2e-6)
 
     def test_invalid_modes_and_inputs_are_rejected(self):
+        for mode in ("text", "hybrid"):
+            for flag in ("--compare-loss", "--loss-implementation"):
+                flags = ["--input-mode", mode, flag] + (["chunked"] if flag == "--loss-implementation" else [])
+                validate_training_options(parse_args(flags))
         for options in (["--loss-implementation", "chunked"],
                         ["--input-mode", "text", "--loss-chunk-size", "0"],
                         ["--stop-after-steps", "0"]):
@@ -295,6 +408,86 @@ class ChunkedLossTests(unittest.TestCase):
             self.assertFalse(list(output.glob("checkpoint-*")))
             for name, p in model.named_parameters():
                 torch.testing.assert_close(p, weights[name], rtol=0, atol=0)
+
+    def test_hybrid_launcher_chunked_training_and_comparison_with_real_qwen(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from PIL import Image
+        from datasets import Dataset
+        from transformers import Trainer, TrainerCallback, TrainingArguments
+        from test_qwen_hybrid import HybridTests, ImageProcessor
+        from src.fusion.hybrid_sft import prepare_hybrid_dataset
+        from src.Qwen import qwen_finetune_logic as training
+
+        fixture = HybridTests(methodName="runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        dataset = fixture.root / "hybrid"
+        prepare_hybrid_dataset(fixture.prepare_source(), dataset)
+
+        class PatchProcessor(ImageProcessor):
+            """Short deterministic tokens; valid real-Qwen image patches/grids."""
+            def __call__(self, **kwargs):
+                self.calls.append(kwargs)
+                rows = []
+                for text in kwargs["text"]:
+                    ids = [1, 29, 29, 29, 29, 2, 3, 4]
+                    if not text.endswith("assistant:"):
+                        ids += [5, 6]
+                    rows.append(ids)
+                ids = torch.tensor(rows)
+                return {"input_ids": ids, "attention_mask": torch.ones_like(ids),
+                        "mm_token_type_ids": (ids == 29).long(),
+                        "pixel_values": torch.ones(len(rows) * 4, 24),
+                        "image_grid_thw": torch.tensor([[1, 2, 2]] * len(rows))}
+
+        for compare in (False, True):
+            with self.subTest(compare=compare):
+                model, processor = tiny_qwen(), PatchProcessor()
+                output = fixture.root / ("comparison" if compare else "training")
+                class Loader:
+                    @staticmethod
+                    def from_pretrained(*args, **kwargs):
+                        return model
+                dependencies = (torch, Image, Dataset, None, None, Trainer, TrainerCallback,
+                                TrainingArguments, (None, None, None),
+                                SimpleNamespace(AutoModelForMultimodalLM=Loader))
+                options = ["--input-mode", "hybrid", "--dataset-root", str(dataset),
+                           "--train-file", "hard/train.jsonl", "--validation-file", "hard/val.jsonl",
+                           "--schema-path", str(dataset / "schema.json"), "--output-dir", str(output),
+                           "--text-tuning", "full", "--no-load-in-4bit", "--compute-dtype", "float32",
+                           "--num-train-epochs", "1", "--gradient-accumulation-steps", "1",
+                           "--eval-strategy", "epoch", "--save-strategy", "epoch",
+                           "--validation-preview-samples", "0", "--loss-implementation", "chunked",
+                           "--loss-chunk-size", "1", "--dataloader-num-workers", "0"]
+                if compare:
+                    options += ["--compare-loss", "--comparison-samples", "1"]
+                with patch.object(training, "load_runtime_dependencies", return_value=dependencies), \
+                        patch.object(training, "load_text_tokenization_resources", return_value=(processor, model.config)), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    if compare:
+                        with patch.object(Trainer, "train", side_effect=AssertionError("Comparison must not train")):
+                            result = training.main(options)
+                    else:
+                        result = training.main(options)
+                self.assertEqual(result, 0)
+                self.assertTrue((output / "hybrid_contract.json").is_file())
+                if compare:
+                    report = json.loads((output / "loss_comparison.json").read_text())
+                    self.assertTrue(report["passed"], report)
+                    self.assertEqual(report["input_mode"], "hybrid")
+                    expected_id = json.loads((dataset / "hard/train.jsonl").read_text())["id"]
+                    self.assertEqual(report["sample_ids"], [expected_id])
+                    self.assertFalse(report["weights_updated"])
+                else:
+                    saved = json.loads((output / "training_config.json").read_text())
+                    self.assertEqual(saved["loss_implementation"], "chunked")
+                    self.assertEqual(saved["loss_chunk_size"], 1)
+                    for path in ("best_model", "last_model"):
+                        self.assertTrue((output / path / "hybrid_contract.json").is_file())
+                    state = json.loads((output / "trainer_state.json").read_text())
+                    self.assertEqual(state["global_step"], 1)
+                    self.assertTrue(any("eval_loss" in row for row in state["log_history"]))
 
 
 if __name__ == "__main__":

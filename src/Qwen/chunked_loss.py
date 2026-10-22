@@ -1,7 +1,8 @@
 """Answer-position causal loss with bounded output-projection memory.
 
-The backbone still processes every input token. Only positions with a supervised
-next-token label reach the vocabulary projection. Non-reentrant checkpointing
+The native multimodal backbone still processes every image and input token.
+Only positions with a supervised next-token label reach the vocabulary projection.
+Non-reentrant checkpointing
 recomputes each projection/FP32 cross-entropy chunk in backward instead of saving
 all its vocabulary-sized intermediates. No custom derivative or reduced-precision
 cross-entropy is used.
@@ -97,9 +98,9 @@ class ChunkedLossController:
             logits_to_keep = arguments.pop("logits_to_keep", 0)
             if not isinstance(logits_to_keep, int) or logits_to_keep != 0:
                 raise ValueError("Labeled chunked forward does not accept logits_to_keep")
-            if any(arguments.get(key) is not None for key in (
-                    "pixel_values", "pixel_values_videos", "past_key_values", "inputs_embeds")):
-                raise ValueError("Chunked training requires complete text-only input_ids batches")
+            if arguments.get("input_ids") is None or any(
+                    arguments.get(key) is not None for key in ("past_key_values", "inputs_embeds")):
+                raise ValueError("Chunked training requires complete input_ids batches without cached states or input embeddings")
             if arguments.pop("num_items_in_batch", None) is not None:
                 raise ValueError("Chunked loss preserves per-microbatch normalization; no token-total override")
             if "shift_labels" in arguments:
@@ -109,6 +110,9 @@ class ChunkedLossController:
                 return_dict = getattr(instance.config, "return_dict", True)
             arguments["return_dict"] = True
             arguments["use_cache"] = False
+            # Keep pixels, image grids, modality IDs and positional inputs intact.
+            # Qwen's native model owns visual encoding, merging and multimodal
+            # RoPE; only the vocabulary projection/loss is replaced here.
             outputs = instance.model(**arguments)
             loss = chunked_causal_loss(outputs[0], labels, instance.lm_head,
                                        controller.chunk_size)

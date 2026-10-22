@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the stage-one input comparison and attempt every experiment.
+# Rerun stage-one OCR + image and hard fusion + image with chunked loss.
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"

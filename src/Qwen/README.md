@@ -5,7 +5,7 @@ document images or text-only OCR/layout conversations.
 Hybrid image + hard-fusion training and inference are described in the
 [four-run hybrid campaign](../../experiments/qwen/hybrid/README.md).
 The current stage-one experiment is the
-[three-run NF4 input comparison](../../experiments/qwen/input_comparison/README.md),
+[NF4 input comparison](../../experiments/qwen/input_comparison/README.md),
 with aligned OCR-only, layout-only, and hard-fusion evidence beside the full image.
 The default run uses `Qwen/Qwen3.5-2B`; its VRAM requirement depends strongly on the
 selected resolution and document sequence lengths.
@@ -82,11 +82,12 @@ setting before importing PyTorch. This reduces allocator fragmentation for varia
 training allocation sizes. An explicitly exported `PYTORCH_CUDA_ALLOC_CONF` value
 takes precedence over this default.
 
-## Memory-efficient text loss and comparison
+## Memory-efficient text/hybrid loss and comparison
 
 `--loss-implementation chunked --loss-chunk-size 256` enables an opt-in
-text-only Qwen3.5 loss. `standard` remains the default and retains the original
-forward. The chunked path runs the same native backbone on the full sequence,
+Qwen3.5 loss for text-only and hybrid training. `standard` remains the default and
+retains the original forward. The chunked path runs the same native multimodal
+backbone on the full sequence, preserving pixels, image grids and modality positions,
 selects positions whose **next-token** labels are supervised, and projects those
 positions through the existing LM head in chunks. It uses native PyTorch FP32
 cross-entropy and non-reentrant activation checkpointing for projection/loss.
@@ -95,6 +96,12 @@ The full vocabulary, answer tokens, prompt gradient flow, and per-microbatch mea
 loss/Trainer gradient-accumulation scaling are preserved. No optimizer, data,
 quantization or learning-rate settings are changed. Unlabeled generation keeps
 the original model forward. Teacher-forced evaluation returns loss only.
+
+The current input-comparison queue enables this loss for the OCR + image and
+hard-fusion + image reruns (256 positions per chunk). The completed layout + image
+run remains excluded. `--compare-loss` also supports hybrid inputs, selecting
+the shortest complete examples by their measured multimodal sequence lengths.
+Its standard-loss reference may still exceed GPU memory on long inputs.
 
 Chunk recomputation trades some work for memory; actual throughput and VRAM
 savings must be measured on the training GPU. Shape changes in GEMM and reduction

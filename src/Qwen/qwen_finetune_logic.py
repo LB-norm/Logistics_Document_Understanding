@@ -195,7 +195,7 @@ def parse_args(
     parser.add_argument("--num-train-epochs", type=float, default=10.0, help="Training epochs.")
     parser.add_argument(
         "--loss-implementation", choices=["standard", "chunked"], default="standard",
-        help="chunked: text-only Qwen3.5 answer-position projection and checkpointed FP32 loss; standard retains the original forward.",
+        help="chunked: text/hybrid Qwen3.5 answer-position projection and checkpointed FP32 loss; standard retains the original forward.",
     )
     parser.add_argument("--loss-chunk-size", type=int, default=256,
                         help="Maximum supervised positions per vocabulary projection/loss chunk.")
@@ -1745,8 +1745,8 @@ def validate_training_options(args: argparse.Namespace) -> None:
         raise ValueError("--check-text-lengths requires --input-mode text.")
     if args.loss_implementation not in {"standard", "chunked"}:
         raise ValueError("--loss-implementation must be standard or chunked.")
-    if (args.loss_implementation == "chunked" or args.compare_loss) and args.input_mode != "text":
-        raise ValueError("Chunked loss/comparison currently requires --input-mode text.")
+    if (args.loss_implementation == "chunked" or args.compare_loss) and args.input_mode not in {"text", "hybrid"}:
+        raise ValueError("Chunked loss/comparison requires --input-mode text or hybrid.")
     if args.loss_chunk_size < 1 or args.comparison_samples < 1:
         raise ValueError("Loss chunk size and comparison sample count must be positive.")
     if args.stop_after_steps is not None and args.stop_after_steps < 1:
@@ -2507,6 +2507,9 @@ def main(
                 print("  token_lengths: not checked; add --check-text-lengths to load the tokenizer/config")
         print(f"  load_in_4bit: {args.load_in_4bit}")
         print(f"  load_in_8bit: {args.load_in_8bit}")
+        print(f"  loss_implementation: {args.loss_implementation}")
+        if args.loss_implementation == "chunked" or args.compare_loss:
+            print(f"  loss_chunk_size: {args.loss_chunk_size}")
         print(f"  text_tuning: {args.text_tuning}")
         print(f"  vision_blocks_tuning: {args.vision_tuning}")
         print(f"  vision_merger_tuning: {args.vision_merger_tuning}")
@@ -2792,11 +2795,19 @@ def main(
                 # Comparison loads only weights. It makes no optimizer update,
                 # so optimizer/scheduler/RNG resume state is neither needed nor loaded.
                 trainer._load_from_checkpoint(args.resume_from_checkpoint)
-            selected = sorted(text_train_data, key=lambda row: len(row["input_ids"]))[:args.comparison_samples]
+            if args.input_mode == "text":
+                selected = sorted(text_train_data, key=lambda row: len(row["input_ids"]))[:args.comparison_samples]
+            else:
+                lengths = {row["id"]: row["conversation_tokens"]
+                           for row in multimodal_length_summary["splits"]["train"]["samples"]}
+                # Compare complete, clean multimodal inputs. Training-only parser
+                # dropout metadata is attached to train_dataset, not these rows.
+                selected = sorted(train_examples, key=lambda row: lengths[row["id"]])[:args.comparison_samples]
             batches = [_move_batch_to_device(data_collator([row]), _model_input_device(model))
                        for row in selected]
             report = compare_loss_methods(model, loss_controller, batches, args.compute_dtype)
             report["sample_ids"] = [row["id"] for row in selected]
+            report["input_mode"] = args.input_mode
             report["comparison_checkpoint"] = args.resume_from_checkpoint
             write_json(args.output_dir / "loss_comparison.json", report)
             vram_summary = vram_tracker.record("loss_comparison", 0)

@@ -74,9 +74,9 @@ class InputComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "contract mismatch"):
             training.hybrid_dataset_contract(args, train + val)
 
-    def test_queue_has_exactly_three_independent_nf4_runs_matching_image_baseline_recipe(self):
+    def test_queue_reruns_only_ocr_and_hard_with_chunked_loss_and_original_recipe(self):
         queue = load_experiment_queue(Path("experiments/qwen/input_comparison/queue.json"))
-        self.assertEqual(len(queue.entries), 3)
+        self.assertEqual(len(queue.entries), 2)
         baseline_args = training.parse_args(["--config", "experiments/qwen/qwen35_9b_qlora_r16.json"])
         seen = set()
         for entry in queue.entries:
@@ -90,9 +90,15 @@ class InputComparisonTests(unittest.TestCase):
                 self.assertEqual(getattr(args, key), getattr(baseline_args, key), key)
             self.assertEqual(training.resolve_optimizer(args, True), training.resolve_optimizer(baseline_args, True))
             self.assertEqual(args.parser_dropout, 0)
-            self.assertEqual(args.loss_implementation, "standard")
+            self.assertEqual(args.loss_implementation, "chunked")
+            self.assertEqual(args.loss_chunk_size, 256)
+            self.assertTrue(args.run_name.endswith("-chunked"))
+            self.assertIsNone(args.resume_from_checkpoint)
             self.assertEqual(args.vision_tuning, "frozen")
-        self.assertEqual(seen, {"ocr", "layout", "hard"})
+        self.assertEqual(seen, {"ocr", "hard"})
+        completed = training.parse_args(["--config", "experiments/qwen/input_comparison/layout_image_nf4_qlora_r16.json"])
+        self.assertEqual(completed.loss_implementation, "standard")
+        self.assertEqual(completed.run_name, "qwen35-9b-hybrid-input-layout-nf4-r16")
 
     def test_pipeline_skips_unused_models_and_sends_only_selected_evidence(self):
         fixture = pipeline_fixtures.PipelineTests(methodName="runTest")
@@ -142,7 +148,8 @@ class InputComparisonTests(unittest.TestCase):
         spec.loader.exec_module(launcher)
         runs = self.root / "runs"
         for mode in ("ocr", "layout", "hard"):
-            run = runs / f"qwen35-9b-hybrid-input-{mode}-nf4-r16"
+            suffix = "" if mode == "layout" else "-chunked"
+            run = runs / f"qwen35-9b-hybrid-input-{mode}-nf4-r16{suffix}"
             (run / "best_model").mkdir(parents=True)
             (run / "best_model/hybrid_contract.json").write_text(json.dumps({"evidence_mode": mode}))
             (run / "training_config.json").write_text(json.dumps({"input_mode": "hybrid", "load_in_4bit": True,

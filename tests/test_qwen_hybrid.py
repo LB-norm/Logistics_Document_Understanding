@@ -207,8 +207,7 @@ class HybridTests(unittest.TestCase):
             self.assertEqual(config["vision_tuning"], config["vision_merger_tuning"])
             self.assertEqual(config["loss_implementation"], "standard")
             self.assertFalse(config["load_in_4bit"])
-        for flags in (["--parser-dropout", ".2"], ["--input-mode", "hybrid", "--parser-dropout", "nan"],
-                      ["--input-mode", "hybrid", "--loss-implementation", "chunked"]):
+        for flags in (["--parser-dropout", ".2"], ["--input-mode", "hybrid", "--parser-dropout", "nan"]):
             with self.assertRaises(ValueError):
                 training.validate_training_options(training.parse_args(flags))
 

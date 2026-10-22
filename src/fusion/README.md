@@ -6,7 +6,7 @@ To pair compact hard-fusion evidence with original full-page images, run
 training-only parser dropout, the four experiment configs, and inference.
 For stage-one input ablations, add `--evidence-modes ocr layout hard` and a new
 `--output-dir`. See the [NF4 input comparison](../../experiments/qwen/input_comparison/README.md)
-for the current three-entry queue and the exact evidence included in each mode.
+for the current OCR/hard chunked-loss rerun queue and the evidence included in each mode.
 
 Build a JSON intermediate representation from the saved PP-OCR document and YOLO
 layout predictions. This stage uses only the Python standard library: it does not
