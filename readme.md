@@ -13,6 +13,7 @@ documents. The current dataset and schema cover CMR documents and German deliver
 | PP-OCRv6 | Reusable OCR with coordinates and train/val OCR dataset preparation | [OCR baseline](src/PP_parser/README.md) |
 | OCR/layout fusion | Separate, hard, or soft geometric representations and batch text-only SFT preparation | [Fusion](src/fusion/README.md) |
 | Hybrid Qwen | Full-page image + OCR, layout, or hard fusion; OCR/hard reruns use chunked loss | [Input comparison](experiments/qwen/input_comparison/README.md) |
+| Hybrid modality dropout | Hard fusion + image with parser 20%, image 20%, or balanced 10%/10% dropout | [Dropout experiments](experiments/qwen/modality_dropout/README.md) |
 | PaddleOCR-VL | Inference and ERNIEKit data preparation | [PaddleOCR-VL](src/PP_parser/README.md) |
 | Conditional DETR | COCO document region detection and fine-tuning | [Conditional DETR](src/conditional_detr/README.md) |
 | YOLO11s | COCO document region detection with matching prediction/review output | [YOLO11s](src/yolo_v11s/README.md) |

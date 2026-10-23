@@ -431,20 +431,22 @@ class ChunkedLossTests(unittest.TestCase):
                 self.calls.append(kwargs)
                 rows = []
                 for text in kwargs["text"]:
-                    ids = [1, 29, 29, 29, 29, 2, 3, 4]
+                    ids = [1] + ([29] * 4 if "<image>" in text else []) + [2, 3, 4]
                     if not text.endswith("assistant:"):
                         ids += [5, 6]
                     rows.append(ids)
                 ids = torch.tensor(rows)
-                return {"input_ids": ids, "attention_mask": torch.ones_like(ids),
-                        "mm_token_type_ids": (ids == 29).long(),
-                        "pixel_values": torch.ones(len(rows) * 4, 24),
-                        "image_grid_thw": torch.tensor([[1, 2, 2]] * len(rows))}
+                batch = {"input_ids": ids, "attention_mask": torch.ones_like(ids),
+                         "mm_token_type_ids": (ids == 29).long()}
+                if kwargs["images"] is not None:
+                    batch.update(pixel_values=torch.ones(len(kwargs["images"]) * 4, 24),
+                                 image_grid_thw=torch.tensor([[1, 2, 2]] * len(kwargs["images"])))
+                return batch
 
-        for compare in (False, True):
-            with self.subTest(compare=compare):
+        for compare, image_dropout in ((False, 0), (False, 1), (True, 0)):
+            with self.subTest(compare=compare, image_dropout=image_dropout):
                 model, processor = tiny_qwen(), PatchProcessor()
-                output = fixture.root / ("comparison" if compare else "training")
+                output = fixture.root / ("comparison" if compare else f"training-image-dropout-{image_dropout}")
                 class Loader:
                     @staticmethod
                     def from_pretrained(*args, **kwargs):
@@ -459,7 +461,8 @@ class ChunkedLossTests(unittest.TestCase):
                            "--num-train-epochs", "1", "--gradient-accumulation-steps", "1",
                            "--eval-strategy", "epoch", "--save-strategy", "epoch",
                            "--validation-preview-samples", "0", "--loss-implementation", "chunked",
-                           "--loss-chunk-size", "1", "--dataloader-num-workers", "0"]
+                           "--loss-chunk-size", "1", "--dataloader-num-workers", "0",
+                           "--image-dropout", str(image_dropout)]
                 if compare:
                     options += ["--compare-loss", "--comparison-samples", "1"]
                 with patch.object(training, "load_runtime_dependencies", return_value=dependencies), \
@@ -483,8 +486,16 @@ class ChunkedLossTests(unittest.TestCase):
                     saved = json.loads((output / "training_config.json").read_text())
                     self.assertEqual(saved["loss_implementation"], "chunked")
                     self.assertEqual(saved["loss_chunk_size"], 1)
+                    self.assertEqual(saved["image_dropout"], image_dropout)
+                    if image_dropout:
+                        # Preflight/evaluation retain images; training passes None.
+                        self.assertTrue(any(call["images"] is None for call in processor.calls))
+                        self.assertIsNotNone(processor.calls[-1]["images"])
                     for path in ("best_model", "last_model"):
                         self.assertTrue((output / path / "hybrid_contract.json").is_file())
+                        if image_dropout:
+                            contract = json.loads((output / path / "hybrid_contract.json").read_text())
+                            self.assertEqual(contract["training_modality_dropout"]["image_probability"], 1)
                     state = json.loads((output / "trainer_state.json").read_text())
                     self.assertEqual(state["global_step"], 1)
                     self.assertTrue(any("eval_loss" in row for row in state["log_history"]))

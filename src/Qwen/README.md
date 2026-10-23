@@ -84,6 +84,14 @@ takes precedence over this default.
 
 ## Memory-efficient text/hybrid loss and comparison
 
+Stage two's [modality dropout queue](../../experiments/qwen/modality_dropout/README.md)
+adds three hard-fusion + image experiments: parser dropout 20%, image dropout 20%,
+and balanced 10%/10%. `--parser-dropout` and `--image-dropout` are mutually
+exclusive per training exposure, with probabilities summing to at most 1.
+Image dropout removes pixels and image placeholders, retains parser evidence and
+adds an image-absence notice. Validation and normal inference retain both inputs.
+No data rebuild is required. Run `bash experiments/qwen/modality_dropout/run_queue.sh`.
+
 `--loss-implementation chunked --loss-chunk-size 256` enables an opt-in
 Qwen3.5 loss for text-only and hybrid training. `standard` remains the default and
 retains the original forward. The chunked path runs the same native multimodal

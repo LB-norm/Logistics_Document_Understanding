@@ -91,6 +91,12 @@ class ChunkedLossController:
             # backbone arguments: the native backbone performs all RoPE/masking.
             extra = arguments.pop("kwargs", {})
             labels = arguments.get("labels")
+            if labels is not None and arguments.get("past_key_values") is None:
+                # Complete training batches must not inherit generation's RoPE
+                # offsets. In particular an image-absent batch can follow a
+                # multimodal one during image dropout. Reset for both methods
+                # so standard/chunked comparisons use the same fresh positions.
+                instance.model.rope_deltas = None
             if not controller.enabled or labels is None:
                 return original(*args, **kwargs)
             arguments.update(extra)

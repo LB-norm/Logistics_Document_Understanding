@@ -1,0 +1,10 @@
+{
+  "format_version": 1,
+  "name": "qwen35-9b-modality-dropout",
+  "description": "Stage 2: hard-fusion + image with parser20%, image20%, or mutually exclusive parser10%/image10% dropout. All retain 80% complete inputs in expectation. NF4 QLoRA, frozen vision and checkpointed answer-position loss (256 positions per chunk). Validation/inference use both modalities. Stage-one hard-fusion no-dropout run is the external reference.",
+  "experiments": [
+    "parser20_nf4_qlora_r16.json",
+    "image20_nf4_qlora_r16.json",
+    "balanced10_10_nf4_qlora_r16.json"
+  ]
+}

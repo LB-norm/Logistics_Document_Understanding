@@ -38,6 +38,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.Qwen.prompts import (
     DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT, HYBRID_REPRESENTATION,
     HYBRID_EVIDENCE_MARKER, HYBRID_EVIDENCE_MODES, build_hybrid_messages, omit_parser_evidence,
+    HYBRID_IMAGE_ABSENCE_TEXT, omit_document_image,
 )
 from src.Qwen.experiment_config import load_experiment_config
 from src.eval_suite import JsonEvaluator
@@ -98,6 +99,8 @@ def parse_args(
     )
     parser.add_argument("--parser-dropout", type=float, default=0.0,
                         help="Hybrid training only: probability of omitting parser evidence while retaining the image. Never applied to validation.")
+    parser.add_argument("--image-dropout", type=float, default=0.0,
+                        help="Hybrid training only: probability of omitting the image while retaining parser evidence. Mutually exclusive with parser dropout per example; probabilities must sum to at most 1.")
     parser.add_argument("--check-multimodal-lengths", action="store_true",
                         help="Check complete hybrid image+prompt+answer token lengths without loading model weights (also with --dry-run).")
     parser.add_argument(
@@ -1128,10 +1131,12 @@ class QwenVisionDataCollator:
                 images.append(image.convert("RGB"))
         return images
 
-    def _processor_images(self, images_per_example: list[list[Any]]) -> list[Any]:
-        if all(len(images) == 1 for images in images_per_example):
-            return [images[0] for images in images_per_example]
-        return images_per_example
+    def _processor_images(self, images_per_example: list[list[Any]]) -> list[Any] | None:
+        # Qwen consumes images in placeholder order across the text batch. A
+        # flattened list also handles mixed image-present/image-absent records;
+        # None skips the image processor when the entire batch lacks images.
+        images = [image for group in images_per_example for image in group]
+        return images or None
 
     def _processor_kwargs(self, texts: list[str], images_per_example: list[list[Any]]) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
@@ -1146,13 +1151,21 @@ class QwenVisionDataCollator:
         return kwargs
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
-        images_per_example = [self._load_images(feature["image_paths"]) for feature in features]
-        messages = [
-            omit_parser_evidence(feature["messages"])
-            if feature.get("parser_dropout", 0.0) > 0 and random.random() < feature["parser_dropout"]
-            else feature["messages"]
-            for feature in features
-        ]
+        messages, images_per_example = [], []
+        for feature in features:
+            parser_probability = feature.get("parser_dropout", 0.0)
+            image_probability = feature.get("image_dropout", 0.0)
+            # One categorical draw per exposure: parser absent, image absent,
+            # or both present. Both modalities can never be dropped together.
+            draw = random.random() if parser_probability or image_probability else 1.0
+            drop_image = parser_probability <= draw < parser_probability + image_probability
+            conversation = feature["messages"]
+            if draw < parser_probability:
+                conversation = omit_parser_evidence(conversation)
+            elif drop_image:
+                conversation = omit_document_image(conversation)
+            messages.append(conversation)
+            images_per_example.append([] if drop_image else self._load_images(feature["image_paths"]))
         full_texts = [
             apply_chat_template_safely(self.processor, conversation, add_generation_prompt=False)
             for conversation in messages
@@ -1208,6 +1221,12 @@ def hybrid_dataset_contract(args: argparse.Namespace, examples: list[dict[str, A
     if contract["evidence_mode"] not in summary.get("evidence_modes", ["hard"]):
         raise ValueError("Hybrid evidence mode is not declared in the dataset summary")
     contract.update(format_version=1, schema=schema, template=template)
+    if args.parser_dropout or args.image_dropout:
+        contract["training_modality_dropout"] = {
+            "policy": "mutually_exclusive", "parser_probability": args.parser_dropout,
+            "image_probability": args.image_dropout, "image_absence_text": HYBRID_IMAGE_ABSENCE_TEXT,
+            "validation_dropout": False,
+        }
     for example in examples:
         blocks = [b["text"] for m in example["messages"] if m["role"] == "user"
                   for b in m["content"] if b.get("type") == "text" and b["text"].startswith(HYBRID_EVIDENCE_MARKER)]
@@ -1739,6 +1758,12 @@ def validate_training_options(args: argparse.Namespace) -> None:
         raise ValueError("--parser-dropout must be between 0 and 1.")
     if args.parser_dropout and args.input_mode != "hybrid":
         raise ValueError("--parser-dropout requires --input-mode hybrid.")
+    if not 0 <= args.image_dropout <= 1:
+        raise ValueError("--image-dropout must be between 0 and 1.")
+    if args.image_dropout and args.input_mode != "hybrid":
+        raise ValueError("--image-dropout requires --input-mode hybrid.")
+    if args.parser_dropout + args.image_dropout > 1:
+        raise ValueError("Parser and image dropout probabilities must sum to at most 1; both modalities are never dropped together.")
     if args.check_multimodal_lengths and args.input_mode != "hybrid":
         raise ValueError("--check-multimodal-lengths requires --input-mode hybrid.")
     if args.check_text_lengths and args.input_mode != "text":
@@ -2496,6 +2521,8 @@ def main(
             print(f"  resolution: {args.resolution} ({max_pixels_for_resolution(args.resolution):,} max pixels)")
             if args.input_mode == "hybrid":
                 print(f"  parser_dropout: {args.parser_dropout} (training only)")
+                print(f"  image_dropout: {args.image_dropout} (training only)")
+                print("  modality_dropout_policy: mutually exclusive; at least one modality retained")
                 if multimodal_length_summary is None:
                     print("  token_lengths: not checked; add --check-multimodal-lengths to process images without model weights")
                 else:
@@ -2727,7 +2754,8 @@ def main(
         else:
             # Only training records carry dropout metadata. The same collator sees
             # clean validation records during Trainer.evaluate and best selection.
-            train_records = ([{**row, "parser_dropout": args.parser_dropout} for row in train_examples]
+            train_records = ([{**row, "parser_dropout": args.parser_dropout,
+                               "image_dropout": args.image_dropout} for row in train_examples]
                              if args.input_mode == "hybrid" else train_examples)
             train_dataset = Dataset.from_list(train_records)
             validation_dataset = Dataset.from_list(validation_examples)

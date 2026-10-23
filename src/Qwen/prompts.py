@@ -150,3 +150,26 @@ def omit_parser_evidence(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
     if removed != 1:
         raise ValueError("Hybrid examples require exactly one dedicated parser evidence block.")
     return result
+
+
+HYBRID_IMAGE_ABSENCE_TEXT = (
+    "The document image is not supplied for this example. Extract using only the "
+    "supplied OCR/layout evidence; do not assume access to visual details."
+)
+
+
+def omit_document_image(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy a hybrid conversation, replacing its image with an absence notice."""
+    from copy import deepcopy
+
+    result = deepcopy(messages)
+    removed = 0
+    for message in result:
+        if message["role"] == "user":
+            for index, block in enumerate(message["content"]):
+                if block.get("type") == "image":
+                    message["content"][index] = {"type": "text", "text": HYBRID_IMAGE_ABSENCE_TEXT}
+                    removed += 1
+    if removed != 1:
+        raise ValueError("Hybrid image dropout requires exactly one user image block.")
+    return result

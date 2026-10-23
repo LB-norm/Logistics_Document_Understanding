@@ -1,5 +1,9 @@
 # Stage 1: image + OCR/layout input comparison
 
+The next campaign is the separate [stage-two modality dropout queue](../modality_dropout/README.md),
+with parser 20%, image 20% and mutually exclusive parser/image 10%/10% runs.
+It reuses the prepared hard-fusion data and the NF4 QLoRA/chunked-loss recipe.
+
 The current queue reruns **OCR + image** and **hard fusion + image** using
 checkpointed chunked loss after the standard-loss OCR run exhausted GPU memory.
 **Layout + image completed successfully and is excluded from the queue**; its
