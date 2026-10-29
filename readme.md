@@ -8,6 +8,7 @@ documents. The current dataset and schema cover CMR documents and German deliver
 | Pipeline | Use | Documentation |
 | --- | --- | --- |
 | Unified inference | End-to-end Qwen/Donut or OCR → YOLO → fusion → Qwen, with per-image measurements | [Inference pipeline](src/inference_pipeline/README.md) |
+| Scientific report plots | Quality, latency, memory, ablations, field scores, and paired comparisons from saved results | [Report plotting](src/report_plots/README.md) |
 | Donut | Full fine-tuning of the Donut vision encoder-decoder model | [Donut](src/Donut/README.md) |
 | Qwen | Adapter/full fine-tuning from images or OCR/layout text conversations | [Qwen](src/Qwen/README.md) |
 | PP-OCRv6 | Reusable OCR with coordinates and train/val OCR dataset preparation | [OCR baseline](src/PP_parser/README.md) |

@@ -1,0 +1,30 @@
+{
+  "sources": [
+    {"path": "../../../results/New/Hybrid"}
+  ],
+  "runs": [
+    "qwen35-9b-hybrid-input-hard-nf4-r16-chunked",
+    "qwen35-9b-hybrid-input-ocr-nf4-r16-chunked",
+    "qwen35-9b-hybrid-input-layout-nf4-r16",
+    "qwen35-9b-hybrid-dropout-image20-nf4-r16-chunked",
+    "qwen35-9b-hybrid-dropout-parser20-nf4-r16-chunked",
+    "qwen35-9b-hybrid-dropout-balanced10-10-nf4-r16-chunked"
+  ],
+  "labels": {
+    "qwen35-9b-hybrid-input-hard-nf4-r16-chunked": "Image + hard fusion",
+    "qwen35-9b-hybrid-input-ocr-nf4-r16-chunked": "Image + OCR",
+    "qwen35-9b-hybrid-input-layout-nf4-r16": "Image + layout",
+    "qwen35-9b-hybrid-dropout-image20-nf4-r16-chunked": "Image dropout 20%",
+    "qwen35-9b-hybrid-dropout-parser20-nf4-r16-chunked": "Parser dropout 20%",
+    "qwen35-9b-hybrid-dropout-balanced10-10-nf4-r16-chunked": "Balanced dropout 10% / 10%"
+  },
+  "groups": {
+    "qwen35-9b-hybrid-input-hard-nf4-r16-chunked": "Input variants",
+    "qwen35-9b-hybrid-input-ocr-nf4-r16-chunked": "Input variants",
+    "qwen35-9b-hybrid-input-layout-nf4-r16": "Input variants",
+    "qwen35-9b-hybrid-dropout-image20-nf4-r16-chunked": "Modality dropout",
+    "qwen35-9b-hybrid-dropout-parser20-nf4-r16-chunked": "Modality dropout",
+    "qwen35-9b-hybrid-dropout-balanced10-10-nf4-r16-chunked": "Modality dropout"
+  },
+  "style": {"width": 7.2, "font_size": 10, "label_width": 32}
+}
